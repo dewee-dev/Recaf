@@ -7,6 +7,7 @@ import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.builder.JvmClassInfoBuilder;
 import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.services.mapping.MappingApplier;
+import software.coley.recaf.services.mapping.MappingApplierService;
 import software.coley.recaf.services.mapping.MappingResults;
 import software.coley.recaf.test.TestBase;
 import software.coley.recaf.test.TestClassUtils;
@@ -25,10 +26,9 @@ import static org.objectweb.asm.Opcodes.V1_8;
  */
 class InheritanceAndRenamingTest extends TestBase {
 	static Workspace workspace;
-	static InheritanceGraph graph;
-	static MappingApplier mappingApplier;
+	static InheritanceGraph inheritanceGraph;
+	static MappingApplierService mappingApplierService;
 	static JvmClassInfo[] generatedClasses;
-
 
 	@BeforeAll
 	static void setup() {
@@ -45,11 +45,11 @@ class InheritanceAndRenamingTest extends TestBase {
 		workspaceManager.setCurrent(workspace);
 
 		// Get graph
-		graph = recaf.get(InheritanceGraph.class);
-		graph.toString(); // Force immediate init.
+		inheritanceGraph = recaf.get(InheritanceGraphService.class).getCurrentWorkspaceInheritanceGraph();
+		inheritanceGraph.toString(); // Force immediate init.
 
 		// Get mapping applier
-		mappingApplier = recaf.get(MappingApplier.class);
+		mappingApplierService = recaf.get(MappingApplierService.class);
 	}
 
 	@Test
@@ -57,7 +57,7 @@ class InheritanceAndRenamingTest extends TestBase {
 		// Verify initial state
 		for (int i = 1; i <= 5; i++) {
 			String name = "I" + i;
-			InheritanceVertex vertex = graph.getVertex(name);
+			InheritanceVertex vertex = inheritanceGraph.getVertex(name);
 			assertNotNull(vertex, "Graph missing '" + name + "'");
 		}
 
@@ -65,21 +65,21 @@ class InheritanceAndRenamingTest extends TestBase {
 		IntermediateMappings mappings = new IntermediateMappings();
 		for (int i = 1; i <= 5; i++)
 			mappings.addClass("I" + i, "R" + i);
-		MappingResults results = mappingApplier.applyToPrimaryResource(mappings);
+		MappingResults results = mappingApplierService.inCurrentWorkspace().applyToPrimaryResource(mappings);
 		results.apply();
 
 		// Very old classes are removed from the graph
 		for (int i = 1; i <= 5; i++) {
 			String name = "I" + i;
-			InheritanceVertex vertex = graph.getVertex(name);
+			InheritanceVertex vertex = inheritanceGraph.getVertex(name);
 			assertNull(vertex, "Graph contains pre-mapped '" + name + "'");
 		}
 
 		// Verify the new classes are added to the graph
-		InheritanceVertex objectVertex = graph.getVertex("java/lang/Object");
+		InheritanceVertex objectVertex = inheritanceGraph.getVertex("java/lang/Object");
 		for (int i = 1; i <= 5; i++) {
 			String name = "R" + i;
-			InheritanceVertex vertex = graph.getVertex(name);
+			InheritanceVertex vertex = inheritanceGraph.getVertex(name);
 			assertNotNull(vertex, "Graph missing post-mapped '" + name + "'");
 			if (i > 1) {
 				Set<InheritanceVertex> parents = vertex.getParents();

@@ -11,9 +11,9 @@ import software.coley.recaf.cdi.InitializationStage;
 import software.coley.recaf.launch.LaunchArguments;
 import software.coley.recaf.launch.LaunchCommand;
 import software.coley.recaf.launch.LaunchHandler;
-import software.coley.recaf.plugin.PluginContainer;
-import software.coley.recaf.plugin.PluginException;
 import software.coley.recaf.services.file.RecafDirectoriesConfig;
+import software.coley.recaf.services.plugin.PluginContainer;
+import software.coley.recaf.services.plugin.PluginException;
 import software.coley.recaf.services.plugin.PluginManager;
 import software.coley.recaf.services.plugin.discovery.DirectoryPluginDiscoverer;
 import software.coley.recaf.services.script.ScriptEngine;
@@ -21,6 +21,7 @@ import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.services.workspace.io.ResourceImporter;
 import software.coley.recaf.ui.config.WindowScaleConfig;
 import software.coley.recaf.util.JFXValidation;
+import software.coley.recaf.util.JdkValidation;
 import software.coley.recaf.util.Lang;
 import software.coley.recaf.workspace.model.BasicWorkspace;
 
@@ -52,6 +53,10 @@ public class Main {
 	 * 		Application arguments.
 	 */
 	public static void main(String[] args) {
+		// Add a shutdown hook which dumps system information to console.
+		// Should provide useful information that users can copy/paste to us for diagnosing problems.
+		ExitDebugLoggingHook.register();
+
 		// Add a class reference for our UI module.
 		Bootstrap.setWeldConsumer(weld -> weld.addPackage(true, Main.class));
 
@@ -71,10 +76,13 @@ public class Main {
 		if (!launchArgValues.isHeadless()) {
 			int validationCode = JFXValidation.validateJFX();
 			if (validationCode != 0) {
-				System.exit(validationCode);
+				ExitDebugLoggingHook.exit(validationCode);
 				return;
 			}
 		}
+
+		// Validate we're on a JDK and not a JRE
+		JdkValidation.validateJdk();
 
 		// Invoke the bootstrapper, initializing the UI once the container is built.
 		recaf = Bootstrap.get();
@@ -196,8 +204,12 @@ public class Main {
 
 		// Load from the plugin directory
 		try {
-			Path pluginDirectory = recaf.get(RecafDirectoriesConfig.class).getPluginDirectory();
+			RecafDirectoriesConfig dirConfig = recaf.get(RecafDirectoriesConfig.class);
+			Path pluginDirectory = dirConfig.getPluginDirectory();
+			Path extraPluginDirectory = dirConfig.getExtraPluginDirectory();
 			pluginManager.loadPlugins(new DirectoryPluginDiscoverer(pluginDirectory));
+			if (extraPluginDirectory != null)
+				pluginManager.loadPlugins(new DirectoryPluginDiscoverer(extraPluginDirectory));
 		} catch (PluginException ex) {
 			logger.error("Failed to initialize plugins", ex);
 		}

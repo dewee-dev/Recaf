@@ -12,6 +12,7 @@ allprojects {
 subprojects {
     apply plugin: 'java'
     apply plugin: 'jacoco'
+    apply plugin: 'maven-publish'
     apply plugin: 'com.github.ben-manes.versions'
 
     repositories {
@@ -72,10 +73,14 @@ subprojects {
     test {
         useJUnitPlatform()
 
+        // Required for Mockito in newer JDK's which disable useful features by default for 'integrity' reasons.
+        jvmArgs '-XX:+EnableDynamicAgentLoading'
+
         systemProperty 'junit.jupiter.execution.parallel.enabled', true
         systemProperty 'junit.jupiter.execution.parallel.mode.default', 'concurrent'
 
         testLogging {
+            showStandardStreams = true
             events "passed", "skipped", "failed"
         }
     }
@@ -105,8 +110,23 @@ subprojects {
         reports.html.required = false
         reports.junitXml.required = true
 
+        // We want to cover all recaf classes, but not the test classes themselves.
+        // The exclusion list is applied after the inclusion list, so this ends up working out.
         jacoco {
             includes = ['software/coley/recaf/**']
+            excludes = ['software/coley/recaf/**Test']
+        }
+    }
+
+    // Setup artifact publishing to maven local
+    publishing {
+        publications {
+            mavenJava(MavenPublication) {
+                from components.java
+            }
+        }
+        repositories {
+            mavenLocal()
         }
     }
 }

@@ -45,6 +45,9 @@ public class RecafApplication extends Application implements WorkspaceOpenListen
 
 	@Override
 	public void start(Stage stage) {
+		// Notify the thread util that FX has been initialized
+		FxThreadUtil.onInitialize();
+
 		// Setup global style
 		setUserAgentStylesheet(new RecafTheme().getUserAgentStylesheet());
 
@@ -89,7 +92,7 @@ public class RecafApplication extends Application implements WorkspaceOpenListen
 		stage.setScene(scene);
 		stage.getIcons().add(Icons.getImage(Icons.LOGO));
 		stage.setTitle("Recaf");
-		stage.setOnCloseRequest(e -> System.exit(0));
+		stage.setOnCloseRequest(e -> ExitDebugLoggingHook.exit(0));
 		stage.show();
 
 		// Register main window

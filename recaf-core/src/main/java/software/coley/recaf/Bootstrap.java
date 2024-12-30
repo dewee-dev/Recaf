@@ -35,13 +35,18 @@ public class Bootstrap {
 					 - Build rev:  {}
 					 - Build date: {}
 					 - Build hash: {}""";
-			logger.info(fmt, VERSION, GIT_REVISION, BUILD_DATE, GIT_SHA);
+			logger.info(fmt, VERSION, GIT_REVISION, GIT_DATE, GIT_SHA);
 			long then = System.currentTimeMillis();
 
 			// Create the Recaf container
-			SeContainer container = createContainer();
-			instance = new Recaf(container);
-			logger.info("Recaf CDI container created in {}ms", System.currentTimeMillis() - then);
+			try {
+				SeContainer container = createContainer();
+				instance = new Recaf(container);
+				logger.info("Recaf CDI container created in {}ms", System.currentTimeMillis() - then);
+			} catch (Throwable t) {
+				logger.error("Failed to create Recaf CDI container", t);
+				ExitDebugLoggingHook.exit(ExitCodes.ERR_CDI_INIT_FAILURE);
+			}
 		}
 		return instance;
 	}
@@ -60,6 +65,7 @@ public class Bootstrap {
 	private static SeContainer createContainer() {
 		logger.info("Creating Recaf CDI container...");
 		Weld weld = new Weld("recaf");
+		weld.setClassLoader(Bootstrap.class.getClassLoader());
 
 		// Setup custom interceptors & extensions
 		logger.info("CDI: Adding interceptors & extensions");
@@ -68,10 +74,7 @@ public class Bootstrap {
 		weld.addExtension(EagerInitializationExtension.getInstance());
 
 		// Setup bean discovery
-		//  - one instance for base package in API
-		//  - one instance for base package in Core
 		logger.info("CDI: Registering bean packages");
-		weld.addPackage(true, RecafConstants.class);
 		weld.addPackage(true, Recaf.class);
 
 		// Handle user-defined action

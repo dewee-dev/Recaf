@@ -1,6 +1,7 @@
 package software.coley.recaf.ui.control.tree;
 
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import javafx.beans.binding.Bindings;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleObjectProperty;
@@ -58,6 +59,14 @@ public class FilterableTreeItem<T> extends TreeItem<T> {
 		setUnderlyingChildren(filteredChildren);
 	}
 
+	/**
+	 * @return Predicate property.
+	 */
+	@Nonnull
+	public ObjectProperty<Predicate<TreeItem<T>>> predicateProperty() {
+		return predicate;
+	}
+
 	@Override
 	@Deprecated(since = "Use FilterableTreeItem dedicated methods for interacting with children")
 	public ObservableList<TreeItem<T>> getChildren() {
@@ -65,11 +74,27 @@ public class FilterableTreeItem<T> extends TreeItem<T> {
 	}
 
 	/**
-	 * @return Source parent, ignoring filtering.
+	 * @return Unfiltered children.
+	 */
+	@Nonnull
+	public ObservableList<TreeItem<T>> getSourceChildren() {
+		return sourceChildren;
+	}
+
+	/**
+	 * @return Source parent property, ignoring filtering.
 	 */
 	@Nonnull
 	public ObjectProperty<TreeItem<T>> sourceParentProperty() {
 		return sourceParent;
+	}
+
+	/**
+	 * @return Source parent, ignoring filtering.
+	 */
+	@Nullable
+	public TreeItem<T> getSourceParent() {
+		return sourceParent.get();
 	}
 
 	/**
@@ -157,9 +182,11 @@ public class FilterableTreeItem<T> extends TreeItem<T> {
 	 * 		Child item to add.
 	 */
 	protected void addPreSortedChild(@Nonnull TreeItem<T> item) {
-		sourceChildren.add(item);
-		if (item instanceof FilterableTreeItem<?> filterableItem)
-			filterableItem.sourceParent.set(Unchecked.cast(this));
+		synchronized (sourceChildren) {
+			sourceChildren.add(item);
+			if (item instanceof FilterableTreeItem<?> filterableItem)
+				filterableItem.sourceParent.set(Unchecked.cast(this));
+		}
 	}
 
 	/**
@@ -191,11 +218,10 @@ public class FilterableTreeItem<T> extends TreeItem<T> {
 	}
 
 	/**
-	 * @return Predicate property.
+	 * @return {@code true} when this tree item is a true leaf based on the unfiltered children.
 	 */
-	@Nonnull
-	public ObjectProperty<Predicate<TreeItem<T>>> predicateProperty() {
-		return predicate;
+	protected boolean isSourceLeaf() {
+		return sourceChildren.isEmpty();
 	}
 
 	static {

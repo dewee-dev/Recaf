@@ -41,7 +41,11 @@ import software.coley.recaf.ui.control.tree.WorkspaceTreeCell;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.Lang;
 import software.coley.recaf.workspace.model.Workspace;
-import software.coley.recaf.workspace.model.bundle.*;
+import software.coley.recaf.workspace.model.bundle.AndroidClassBundle;
+import software.coley.recaf.workspace.model.bundle.Bundle;
+import software.coley.recaf.workspace.model.bundle.ClassBundle;
+import software.coley.recaf.workspace.model.bundle.FileBundle;
+import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 /**
@@ -54,6 +58,7 @@ import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 public class CellConfigurationService implements Service {
 	public static final String SERVICE_ID = "cell-configuration";
 	private static final String UNKNOWN_TEXT = "[ERROR]";
+	private static final String CLASS_EDITED = "modified-class-cell";
 	private static final Node UNKNOWN_GRAPHIC = new FontIconView(CarbonIcons.MISUSE_ALT);
 	private static final Logger logger = Logging.get(WorkspaceTreeCell.class);
 	private final CellConfigurationServiceConfig config;
@@ -102,6 +107,7 @@ public class CellConfigurationService implements Service {
 	 */
 	public void reset(@Nonnull Cell<?> cell) {
 		FxThreadUtil.run(() -> {
+			cell.getStyleClass().remove(CLASS_EDITED);
 			cell.setText(null);
 			cell.setGraphic(null);
 			cell.setContextMenu(null);
@@ -119,6 +125,7 @@ public class CellConfigurationService implements Service {
 	 */
 	public void configure(@Nonnull Cell<?> cell, @Nonnull PathNode<?> item, @Nonnull ContextSource source) {
 		FxThreadUtil.run(() -> {
+			configureStyle(cell, item);
 			cell.setText(textOf(item));
 			cell.setGraphic(graphicOf(item));
 			cell.setOnMouseClicked(contextMenuHandlerOf(cell, item, source));
@@ -152,6 +159,28 @@ public class CellConfigurationService implements Service {
 			logger.warn("Cannot open unsupported content type");
 		}
 		return null;
+	}
+
+	/**
+	 * @param cell
+	 * 		Cell node to configure style of.
+	 * @param item
+	 * 		Content within the cell.
+	 */
+	public void configureStyle(@Nonnull Node cell, @Nonnull PathNode<?> item) {
+		// Add the edited class CSS style to classes & files with changes made to them
+		cell.getStyleClass().remove(CLASS_EDITED);
+		if (item instanceof ClassPathNode classPathNode) {
+			var bundle = classPathNode.getValueOfType(ClassBundle.class);
+			if (bundle != null && bundle.hasHistory(classPathNode.getValue().getName())) {
+				cell.getStyleClass().add(CLASS_EDITED);
+			}
+		} else if (item instanceof FilePathNode filePathNode) {
+			var bundle = filePathNode.getValueOfType(FileBundle.class);
+			if (bundle != null && bundle.hasHistory(filePathNode.getValue().getName())) {
+				cell.getStyleClass().add(CLASS_EDITED);
+			}
+		}
 	}
 
 	/**

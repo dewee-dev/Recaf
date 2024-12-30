@@ -6,13 +6,22 @@ import org.fxmisc.richtext.CodeArea;
 import org.fxmisc.richtext.model.PlainTextChange;
 import org.fxmisc.richtext.model.ReadOnlyStyledDocument;
 import org.fxmisc.richtext.model.TwoDimensional;
+import software.coley.collections.Lists;
 import software.coley.collections.Unchecked;
 import software.coley.recaf.analytics.logging.DebuggingLogger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.ui.control.richtext.Editor;
 import software.coley.recaf.ui.control.richtext.EditorComponent;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -35,7 +44,8 @@ public class ProblemTracking implements EditorComponent, Consumer<PlainTextChang
 	public void add(@Nonnull Problem problem) {
 		List<Problem> list;
 		synchronized (problems) {list = problems.computeIfAbsent(problem.line(), k -> new ArrayList<>());}
-		list.add(problem);
+		int index = Lists.sortedInsertIndex(list, problem);
+		list.add(index, problem);
 		Unchecked.checkedForEach(listeners, ProblemInvalidationListener::onProblemInvalidation,
 				(listener, t) -> logger.error("Exception thrown when adding problem to tracking", t));
 	}
@@ -128,9 +138,9 @@ public class ProblemTracking implements EditorComponent, Consumer<PlainTextChang
 	 *
 	 * @return Problems on the line.
 	 */
-	@Nullable
+	@Nonnull
 	public List<Problem> getProblemsOnLine(int line) {
-		synchronized (problems) {return problems.get(line);}
+		synchronized (problems) { return problems.getOrDefault(line, Collections.emptyList()); }
 	}
 
 	/**
@@ -142,7 +152,7 @@ public class ProblemTracking implements EditorComponent, Consumer<PlainTextChang
 	@Nullable
 	public Problem getFirstProblemOnLine(int line) {
 		List<Problem> problems = getProblemsOnLine(line);
-		if (problems == null || problems.isEmpty())
+		if (problems.isEmpty())
 			return null;
 		return problems.getFirst();
 	}
@@ -208,6 +218,9 @@ public class ProblemTracking implements EditorComponent, Consumer<PlainTextChang
 
 	@Override
 	public void accept(PlainTextChange change) {
+		// Skip if there is no associated editor, or there are no problems to update
+		if (editor == null || problems.isEmpty()) return;
+
 		// TODO: There are some edge cases where the tracking of problem indicators will fail, and we just
 		//  delete them. Deleting an empty line before a line with an error will void it.
 		//  I'm not really sure how to make a clean fix for that, but because the rest of
@@ -249,6 +262,15 @@ public class ProblemTracking implements EditorComponent, Consumer<PlainTextChang
 		}
 	}
 
+	/**
+	 * Shifts problems beyond the given range by {@code 1 + (endLine - startLine)}.
+	 * Problems in the removed range are deleted.
+	 *
+	 * @param startLine
+	 * 		Starting range of lines inserted <i>(inclusive)</i>.
+	 * @param endLine
+	 * 		Ending range of lines inserted <i>(inclusive)</i>.
+	 */
 	protected void onLinesInserted(int startLine, int endLine) {
 		logger.debugging(l -> l.trace("Lines inserted: {}-{}", startLine, endLine));
 		TreeSet<Map.Entry<Integer, List<Problem>>> set =
@@ -270,6 +292,15 @@ public class ProblemTracking implements EditorComponent, Consumer<PlainTextChang
 				});
 	}
 
+	/**
+	 * Shifts problems beyond the given range by {@code endLine - startLine}.
+	 * Problems in the removed range are deleted.
+	 *
+	 * @param startLine
+	 * 		Starting range of lines removed <i>(inclusive)</i>.
+	 * @param endLine
+	 * 		Ending range of lines removed <i>(exclusive)</i>.
+	 */
 	protected void onLinesRemoved(int startLine, int endLine) {
 		logger.debugging(l -> l.trace("Lines removed: {}-{}", startLine, endLine));
 

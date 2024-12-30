@@ -2,10 +2,13 @@ package software.coley.recaf.ui.control.tree;
 
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
+import javafx.collections.ObservableList;
 import javafx.scene.control.TreeItem;
+import software.coley.collections.Unchecked;
 import software.coley.recaf.path.BundlePathNode;
 import software.coley.recaf.path.DirectoryPathNode;
 import software.coley.recaf.path.PathNode;
+import software.coley.recaf.util.StringUtil;
 
 /**
  * Tree item subtype for more convenience tree building operations.
@@ -33,23 +36,21 @@ public class WorkspaceTreeNode extends FilterableTreeItem<PathNode<?>> implement
 	 * {@code false} if nothing was removed.
 	 */
 	public synchronized boolean removeNodeByPath(@Nonnull PathNode<?> path) {
-		// Call from root node only.
-		WorkspaceTreeNode root = this;
-		while (root.getParent() instanceof WorkspaceTreeNode parentNode)
-			root = parentNode;
-
-		// Get node by path.
-		WorkspaceTreeNode nodeByPath = root.getNodeByPath(path);
+		// Get node by path from the root.
+		WorkspaceTreeNode nodeByPath = getRoot().getNodeByPath(path);
 
 		// Get that node's parent, remove the child.
-		if (nodeByPath != null && nodeByPath.getParent() instanceof WorkspaceTreeNode parentNode) {
-			boolean removed = parentNode.removeSourceChild(nodeByPath);
-			while (parentNode.isLeaf() && parentNode.getParentNode() != null) {
-				WorkspaceTreeNode parentOfParent = parentNode.getParentNode();
-				parentOfParent.removeSourceChild(parentNode);
-				parentNode = parentOfParent;
+		if (nodeByPath != null) {
+			WorkspaceTreeNode parentNode = nodeByPath.getSourceParentNode();
+			if (parentNode != null) {
+				boolean removed = parentNode.removeSourceChild(nodeByPath);
+				while (parentNode.isSourceLeaf() && parentNode.getSourceParentNode() != null) {
+					WorkspaceTreeNode parentOfParent = parentNode.getSourceParentNode();
+					parentOfParent.removeSourceChild(parentNode);
+					parentNode = parentOfParent;
+				}
+				return removed;
 			}
-			return removed;
 		}
 
 		// No known node by path.
@@ -67,9 +68,7 @@ public class WorkspaceTreeNode extends FilterableTreeItem<PathNode<?>> implement
 	@Nonnull
 	public synchronized WorkspaceTreeNode getOrCreateNodeByPath(@Nonnull PathNode<?> path) {
 		// Call from root node only.
-		WorkspaceTreeNode root = this;
-		while (root.getParent() instanceof WorkspaceTreeNode parentNode)
-			root = parentNode;
+		WorkspaceTreeNode root = getRoot();
 
 		// Lookup and/or create nodes for path.
 		return getOrInsertIntoTree(root, path);
@@ -84,13 +83,14 @@ public class WorkspaceTreeNode extends FilterableTreeItem<PathNode<?>> implement
 	 * @return Node containing the path in the tree.
 	 */
 	@Nullable
-	@SuppressWarnings("deprecation")
 	public synchronized WorkspaceTreeNode getNodeByPath(@Nonnull PathNode<?> path) {
+		// Base case, we are that path.
 		PathNode<?> value = getValue();
 		if (path.equals(value))
 			return this;
 
-		for (TreeItem<PathNode<?>> child : getChildren())
+		// Check all children for a match, regardless of the current filter.
+		for (TreeItem<PathNode<?>> child : getSourceChildren())
 			if (path.isDescendantOf(child.getValue()) && child instanceof WorkspaceTreeNode childNode)
 				return childNode.getNodeByPath(path);
 
@@ -101,11 +101,27 @@ public class WorkspaceTreeNode extends FilterableTreeItem<PathNode<?>> implement
 	 * @return First child tree node. {@code null} if no child is found.
 	 */
 	@Nullable
-	@SuppressWarnings("deprecation")
 	public synchronized WorkspaceTreeNode getFirstChild() {
-		return getChildren().isEmpty()
-				? null : getChildren().getFirst() instanceof WorkspaceTreeNode node
+		// Get first child, regardless of the current filter.
+		var children = getSourceChildren();
+		return children.isEmpty()
+				? null : children.getFirst() instanceof WorkspaceTreeNode node
 				? node : null;
+	}
+
+	/**
+	 * @return The root of this tree node's parent hierarchy.
+	 */
+	@Nonnull
+	public WorkspaceTreeNode getRoot() {
+		WorkspaceTreeNode root = this;
+		while (true) {
+			WorkspaceTreeNode parentNode = root.getSourceParentNode();
+			if (parentNode == null)
+				break;
+			root = parentNode;
+		}
+		return root;
 	}
 
 	/**
@@ -119,11 +135,11 @@ public class WorkspaceTreeNode extends FilterableTreeItem<PathNode<?>> implement
 	}
 
 	/**
-	 * @return {@link #getParent()} but cast to {@link WorkspaceTreeNode}.
+	 * @return {@link #getSourceParent()} but cast to {@link WorkspaceTreeNode}.
 	 */
 	@Nullable
-	public WorkspaceTreeNode getParentNode() {
-		return (WorkspaceTreeNode) getParent();
+	public WorkspaceTreeNode getSourceParentNode() {
+		return (WorkspaceTreeNode) getSourceParent();
 	}
 
 	@Override
@@ -137,6 +153,26 @@ public class WorkspaceTreeNode extends FilterableTreeItem<PathNode<?>> implement
 	}
 
 	/**
+	 * A debugging util to inspect the state of the tree without having to dig through
+	 * the actual references in the debugger.
+	 *
+	 * @return String representation of this tree and all of its descendants.
+	 */
+	@Nonnull
+	public String printTree() {
+		StringBuilder sb = new StringBuilder(toString());
+		for (TreeItem<PathNode<?>> child : getSourceChildren()) {
+			if (child instanceof WorkspaceTreeNode childNode) {
+				String childTree = childNode.printTree();
+				for (String childTreeEntry : StringUtil.fastSplit(childTree, false, '\n')) {
+					sb.append("\n    ").append(childTreeEntry);
+				}
+			}
+		}
+		return sb.toString();
+	}
+
+	/**
 	 * Get/insert a {@link WorkspaceTreeNode} holding the given {@link PathNode} from/to the tree model.
 	 *
 	 * @param node
@@ -147,7 +183,6 @@ public class WorkspaceTreeNode extends FilterableTreeItem<PathNode<?>> implement
 	 * @return Inserted node.
 	 */
 	@Nonnull
-	@SuppressWarnings("deprecation")
 	public static WorkspaceTreeNode getOrInsertIntoTree(@Nonnull WorkspaceTreeNode node, @Nonnull PathNode<?> path) {
 		return getOrInsertIntoTree(node, path, false);
 	}
@@ -177,8 +212,11 @@ public class WorkspaceTreeNode extends FilterableTreeItem<PathNode<?>> implement
 				node = getOrInsertIntoTree(node, parent, sorted);
 
 			// Work off of the first node that does NOT contain a directory value.
+			// This should result in the node pointing to a bundle.
 			while (node.getValue() instanceof DirectoryPathNode) {
-				node = (WorkspaceTreeNode) node.getParent();
+				node = (WorkspaceTreeNode) node.getSourceParent();
+				if (node == null)
+					throw new IllegalStateException("Directory path node had no parent in workspace tree");
 			}
 
 			// Insert the directory path, separated by '/'.
@@ -197,7 +235,12 @@ public class WorkspaceTreeNode extends FilterableTreeItem<PathNode<?>> implement
 
 				// Get existing tree node, or create child if non-existent
 				WorkspaceTreeNode childNode = null;
-				for (TreeItem<PathNode<?>> child : node.getChildren())
+				ObservableList<TreeItem<PathNode<?>>> children;
+				if (node instanceof FilterableTreeItem<?> filterableNode)
+					children = Unchecked.cast(filterableNode.getSourceChildren());
+				else
+					children = node.getChildren();
+				for (TreeItem<PathNode<?>> child : children)
 					if (child.getValue().equals(localPathNode)) {
 						childNode = (WorkspaceTreeNode) child;
 						break;
@@ -229,7 +272,12 @@ public class WorkspaceTreeNode extends FilterableTreeItem<PathNode<?>> implement
 		}
 
 		// Check if already inserted.
-		for (TreeItem<PathNode<?>> child : node.getChildren())
+		ObservableList<TreeItem<PathNode<?>>> children;
+		if (node instanceof FilterableTreeItem<?> filterableNode)
+			children = Unchecked.cast(filterableNode.getSourceChildren());
+		else
+			children = node.getChildren();
+		for (TreeItem<PathNode<?>> child : children)
 			if (path.equals(child.getValue()))
 				return (WorkspaceTreeNode) child;
 

@@ -2,11 +2,7 @@ package software.coley.recaf.services.inheritance;
 
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
-import jakarta.inject.Inject;
 import software.coley.collections.Lists;
-import software.coley.recaf.cdi.AutoRegisterWorkspaceListeners;
-import software.coley.recaf.cdi.EagerInitialization;
-import software.coley.recaf.cdi.WorkspaceScoped;
 import software.coley.recaf.info.AndroidClassInfo;
 import software.coley.recaf.info.BasicJvmClassInfo;
 import software.coley.recaf.info.ClassInfo;
@@ -16,7 +12,6 @@ import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.ResourcePathNode;
 import software.coley.recaf.services.Service;
 import software.coley.recaf.services.mapping.MappingApplicationListener;
-import software.coley.recaf.services.mapping.MappingListeners;
 import software.coley.recaf.services.mapping.MappingResults;
 import software.coley.recaf.services.workspace.WorkspaceCloseListener;
 import software.coley.recaf.workspace.model.Workspace;
@@ -28,20 +23,24 @@ import software.coley.recaf.workspace.model.resource.ResourceJvmClassListener;
 import software.coley.recaf.workspace.model.resource.RuntimeWorkspaceResource;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
+import java.util.LinkedList;
+import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
- * Class inheritance graph utility.
+ * Represents class inheritance as a navigable graph.
  *
  * @author Matt Coley
  */
-@WorkspaceScoped
-@EagerInitialization
-@AutoRegisterWorkspaceListeners
 public class InheritanceGraph implements Service, WorkspaceModificationListener, WorkspaceCloseListener,
 		ResourceJvmClassListener, ResourceAndroidClassListener, MappingApplicationListener {
 	public static final String SERVICE_ID = "graph-inheritance";
@@ -63,8 +62,8 @@ public class InheritanceGraph implements Service, WorkspaceModificationListener,
 	 * @param workspace
 	 * 		Workspace to pull classes from.
 	 */
-	@Inject
-	public InheritanceGraph(@Nonnull InheritanceGraphConfig config, @Nonnull MappingListeners mappingListeners, @Nonnull Workspace workspace) {
+	public InheritanceGraph(@Nonnull InheritanceGraphConfig config,
+	                        @Nonnull Workspace workspace) {
 		this.config = config;
 		this.workspace = workspace;
 
@@ -72,9 +71,6 @@ public class InheritanceGraph implements Service, WorkspaceModificationListener,
 		WorkspaceResource primaryResource = workspace.getPrimaryResource();
 		primaryResource.addResourceJvmClassListener(this);
 		primaryResource.addResourceAndroidClassListener(this);
-
-		// Add listener to handle updating the graph when renaming is applied.
-		mappingListeners.addMappingApplicationListener(this);
 
 		// Populate downwards (parent --> child) lookup
 		refreshChildLookup();
@@ -107,6 +103,11 @@ public class InheritanceGraph implements Service, WorkspaceModificationListener,
 	 */
 	private void populateParentToChildLookup(@Nonnull String name, @Nonnull String parentName) {
 		parentToChild.computeIfAbsent(parentName, k -> ConcurrentHashMap.newKeySet()).add(name);
+
+		InheritanceVertex parentVertex = getVertex(parentName);
+		InheritanceVertex childVertex = getVertex(name);
+		if (parentVertex != null) parentVertex.clearCachedVertices();
+		if (childVertex != null) childVertex.clearCachedVertices();
 	}
 
 	/**
@@ -256,6 +257,29 @@ public class InheritanceGraph implements Service, WorkspaceModificationListener,
 		if (vertex.isModule())
 			return Collections.singleton(vertex);
 		return vertex.getFamily(includeObject);
+	}
+
+	/**
+	 * Given {@code List.class.isAssignableFrom(ArrayList.class)} the {@code first} parameter would be
+	 * {@code java/util/List} and the {@code second} parameter would be {@code java/util/ArrayList}.
+	 *
+	 * @param first
+	 * 		Assumed super-class or interface type.
+	 * @param second
+	 * 		Assumed child class which extends the super-class or implements the interface type.
+	 *
+	 * @return {@code true} when {@code first.isAssignableFrom(second)}.
+	 */
+	public boolean isAssignableFrom(@Nonnull String first, @Nonnull String second) {
+		// Base/edge case
+		if (OBJECT.equals(first))
+			return true;
+
+		// Lookup vertex for the child type, and see if any parent contains the supposed super/interface type.
+		InheritanceVertex secondVertex = getVertex(second);
+		if (secondVertex == null)
+			return false;
+		return secondVertex.allParents().anyMatch(v -> v.getName().equals(first));
 	}
 
 	/**

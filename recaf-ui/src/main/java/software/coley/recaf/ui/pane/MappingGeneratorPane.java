@@ -13,13 +13,32 @@ import jakarta.inject.Inject;
 import javafx.beans.binding.Bindings;
 import javafx.beans.binding.BooleanBinding;
 import javafx.beans.binding.StringBinding;
-import javafx.beans.property.*;
+import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.IntegerProperty;
+import javafx.beans.property.ObjectProperty;
+import javafx.beans.property.ReadOnlyObjectProperty;
+import javafx.beans.property.SimpleBooleanProperty;
+import javafx.beans.property.SimpleIntegerProperty;
+import javafx.beans.property.SimpleObjectProperty;
+import javafx.beans.property.SimpleStringProperty;
+import javafx.beans.property.StringProperty;
 import javafx.beans.value.ObservableValue;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
-import javafx.scene.control.*;
-import javafx.scene.layout.*;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
+import javafx.scene.control.MenuButton;
+import javafx.scene.control.SplitPane;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Pane;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
 import javafx.scene.text.TextAlignment;
 import javafx.util.StringConverter;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
@@ -31,8 +50,10 @@ import software.coley.recaf.config.ConfigGroups;
 import software.coley.recaf.services.config.ConfigComponentFactory;
 import software.coley.recaf.services.config.ConfigComponentManager;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
+import software.coley.recaf.services.inheritance.InheritanceGraphService;
 import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.services.mapping.MappingApplier;
+import software.coley.recaf.services.mapping.MappingApplierService;
 import software.coley.recaf.services.mapping.MappingResults;
 import software.coley.recaf.services.mapping.Mappings;
 import software.coley.recaf.services.mapping.aggregate.AggregateMappingManager;
@@ -40,21 +61,37 @@ import software.coley.recaf.services.mapping.aggregate.AggregatedMappings;
 import software.coley.recaf.services.mapping.format.EnigmaMappings;
 import software.coley.recaf.services.mapping.gen.MappingGenerator;
 import software.coley.recaf.services.mapping.gen.filter.*;
-import software.coley.recaf.services.mapping.gen.naming.*;
+import software.coley.recaf.services.mapping.gen.naming.DeconflictingNameGenerator;
+import software.coley.recaf.services.mapping.gen.naming.IncrementingNameGeneratorProvider;
+import software.coley.recaf.services.mapping.gen.naming.NameGenerator;
+import software.coley.recaf.services.mapping.gen.naming.NameGeneratorProvider;
+import software.coley.recaf.services.mapping.gen.naming.NameGeneratorProviders;
 import software.coley.recaf.services.search.match.StringPredicate;
 import software.coley.recaf.services.search.match.StringPredicateProvider;
 import software.coley.recaf.ui.LanguageStylesheets;
-import software.coley.recaf.ui.control.*;
+import software.coley.recaf.ui.control.ActionButton;
+import software.coley.recaf.ui.control.ActionMenuItem;
+import software.coley.recaf.ui.control.BoundCheckBox;
+import software.coley.recaf.ui.control.BoundComboBox;
+import software.coley.recaf.ui.control.BoundIntSpinner;
+import software.coley.recaf.ui.control.BoundLabel;
+import software.coley.recaf.ui.control.BoundTextField;
+import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.control.richtext.Editor;
 import software.coley.recaf.ui.control.richtext.search.SearchBar;
 import software.coley.recaf.ui.control.richtext.syntax.RegexLanguages;
 import software.coley.recaf.ui.control.richtext.syntax.RegexSyntaxHighlighter;
-import software.coley.recaf.util.*;
+import software.coley.recaf.util.AccessFlag;
+import software.coley.recaf.util.FxThreadUtil;
+import software.coley.recaf.util.Lang;
+import software.coley.recaf.util.StringUtil;
+import software.coley.recaf.util.ToStringConverter;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
@@ -83,9 +120,9 @@ public class MappingGeneratorPane extends StackPane {
 	private final StringPredicateProvider stringPredicateProvider;
 	private final MappingGenerator mappingGenerator;
 	private final ConfigComponentManager componentManager;
-	private final InheritanceGraph graph;
+	private final InheritanceGraph inheritanceGraph;
 	private final ModalPane modal = new ModalPane();
-	private final MappingApplier mappingApplier;
+	private final MappingApplierService mappingApplierService;
 	private final Pane previewGroup;
 
 	@Inject
@@ -94,9 +131,9 @@ public class MappingGeneratorPane extends StackPane {
 	                            @Nonnull StringPredicateProvider stringPredicateProvider,
 	                            @Nonnull MappingGenerator mappingGenerator,
 	                            @Nonnull ConfigComponentManager componentManager,
-	                            @Nonnull InheritanceGraph graph,
+	                            @Nonnull InheritanceGraphService graphService,
 	                            @Nonnull AggregateMappingManager aggregateMappingManager,
-	                            @Nonnull MappingApplier mappingApplier,
+	                            @Nonnull MappingApplierService mappingApplierService,
 	                            @Nonnull Instance<SearchBar> searchBarProvider) {
 
 		this.workspace = workspace;
@@ -104,8 +141,8 @@ public class MappingGeneratorPane extends StackPane {
 		this.stringPredicateProvider = stringPredicateProvider;
 		this.mappingGenerator = mappingGenerator;
 		this.componentManager = componentManager;
-		this.graph = graph;
-		this.mappingApplier = mappingApplier;
+		this.inheritanceGraph = Objects.requireNonNull(graphService.getCurrentWorkspaceInheritanceGraph(), "Graph not created");
+		this.mappingApplierService = mappingApplierService;
 
 		// Cache text matchers.
 		stringPredicates = stringPredicateProvider.getBiStringMatchers().keySet().stream().sorted().toList();
@@ -207,7 +244,7 @@ public class MappingGeneratorPane extends StackPane {
 				deconflictingGenerator.setWorkspace(workspace);
 
 			// Generate the mappings
-			return mappingGenerator.generate(workspace, workspace.getPrimaryResource(), graph, generator, finalFilter);
+			return mappingGenerator.generate(workspace, workspace.getPrimaryResource(), inheritanceGraph, generator, finalFilter);
 		}).whenCompleteAsync((mappings, error) -> {
 			previewGroup.setDisable(false);
 			if (mappings != null) {
@@ -220,15 +257,19 @@ public class MappingGeneratorPane extends StackPane {
 
 	private void apply() {
 		Mappings mappings = mappingsToApply.get();
+		if (mappings == null)
+			return;
+
+		MappingApplier applier = mappingApplierService.inCurrentWorkspace();
+		if (applier == null)
+			return;
 
 		// Apply the mappings
-		if (mappings != null) {
-			MappingResults results = mappingApplier.applyToPrimaryResource(mappings);
-			results.apply();
+		MappingResults results = applier.applyToPrimaryResource(mappings);
+		results.apply();
 
-			// Clear property now that the mappings have been applied
-			mappingsToApply.set(null);
-		}
+		// Clear property now that the mappings have been applied
+		mappingsToApply.set(null);
 	}
 
 	@Nonnull
@@ -260,12 +301,14 @@ public class MappingGeneratorPane extends StackPane {
 				int classes = mappings.getClasses().size();
 				int fields = mappings.getFields().size();
 				int methods = mappings.getMethods().size();
+				int variables = mappings.getVariables().size();
 				String formatted = """
 						Mappings will rename:
 						 - %d classes
 						 - %d fields
 						 - %d methods
-						""".formatted(classes, fields, methods);
+						 - %d variables
+						""".formatted(classes, fields, methods, variables);
 				stats.setText(formatted);
 
 				// Also update editor preview
@@ -396,7 +439,7 @@ public class MappingGeneratorPane extends StackPane {
 			// At least one input, show them via the modal
 			Label title = new BoundLabel(filterConfig.display());
 			title.getStyleClass().add(Styles.TITLE_3);
-			VBox layout = new VBox(title, configurator, new ActionButton(Lang.getBinding("mapgen.filters.editdone"), () -> {
+			VBox layout = new VBox(title, configurator, new ActionButton(Lang.getBinding("misc.done"), () -> {
 				modal.hide(true);
 				if (onDone != null)
 					onDone.run();
@@ -440,9 +483,11 @@ public class MappingGeneratorPane extends StackPane {
 		private final StringProperty classPredicateId = new SimpleStringProperty();
 		private final StringProperty fieldPredicateId = new SimpleStringProperty();
 		private final StringProperty methodPredicateId = new SimpleStringProperty();
+		private final StringProperty variablePredicateId = new SimpleStringProperty();
 		private final StringProperty className = new SimpleStringProperty("com/example/Foo");
 		private final StringProperty fieldName = new SimpleStringProperty("foo");
 		private final StringProperty methodName = new SimpleStringProperty("getFoo");
+		private final StringProperty variableName = new SimpleStringProperty("fizz");
 
 		@Nonnull
 		@Override
@@ -477,7 +522,18 @@ public class MappingGeneratorPane extends StackPane {
 								else
 									return methodName;
 							}));
-						return Lang.getBinding("misc.ignored");
+						return variablePredicateId.isNotNull().flatMap(hasVariable -> {
+							if (hasVariable)
+								return Bindings.concat(Lang.getBinding("mapgen.filter.excludename"), ": ", variablePredicateId.flatMap(key -> {
+									if (StringPredicateProvider.KEY_ANYTHING.equals(key))
+										return Lang.getBinding("string.match.anything");
+									else if (StringPredicateProvider.KEY_NOTHING.equals(key))
+										return Lang.getBinding("string.match.zilch");
+									else
+										return variableName;
+								}));
+							return Lang.getBinding("misc.ignored");
+						});
 					});
 				});
 			});
@@ -489,7 +545,8 @@ public class MappingGeneratorPane extends StackPane {
 			return next -> new ExcludeNameFilter(next,
 					classPredicateId.isNotNull().get() ? stringPredicateProvider.newBiStringPredicate(classPredicateId.get(), className.get()) : null,
 					fieldPredicateId.isNotNull().get() ? stringPredicateProvider.newBiStringPredicate(fieldPredicateId.get(), fieldName.get()) : null,
-					methodPredicateId.isNotNull().get() ? stringPredicateProvider.newBiStringPredicate(methodPredicateId.get(), methodName.get()) : null
+					methodPredicateId.isNotNull().get() ? stringPredicateProvider.newBiStringPredicate(methodPredicateId.get(), methodName.get()) : null,
+					variablePredicateId.isNotNull().get() ? stringPredicateProvider.newBiStringPredicate(variablePredicateId.get(), variableName.get()) : null
 			);
 		}
 
@@ -498,6 +555,7 @@ public class MappingGeneratorPane extends StackPane {
 			BoundTextField txtClass = new BoundTextField(className);
 			BoundTextField txtField = new BoundTextField(fieldName);
 			BoundTextField txtMethod = new BoundTextField(methodName);
+			BoundTextField txtVariable = new BoundTextField(variableName);
 			txtClass.disableProperty().bind(classPredicateId.isNull()
 					.or(classPredicateId.isEqualTo(StringPredicateProvider.KEY_ANYTHING))
 					.or(classPredicateId.isEqualTo(StringPredicateProvider.KEY_NOTHING)));
@@ -507,6 +565,9 @@ public class MappingGeneratorPane extends StackPane {
 			txtMethod.disableProperty().bind(methodPredicateId.isNull()
 					.or(methodPredicateId.isEqualTo(StringPredicateProvider.KEY_ANYTHING))
 					.or(methodPredicateId.isEqualTo(StringPredicateProvider.KEY_NOTHING)));
+			txtVariable.disableProperty().bind(variablePredicateId.isNull()
+					.or(variablePredicateId.isEqualTo(StringPredicateProvider.KEY_ANYTHING))
+					.or(variablePredicateId.isEqualTo(StringPredicateProvider.KEY_NOTHING)));
 
 			GridPane grid = new GridPane();
 			grid.setVgap(5);
@@ -517,6 +578,8 @@ public class MappingGeneratorPane extends StackPane {
 					txtField, new BoundComboBox<>(fieldPredicateId, stringPredicatesWithNull, textPredicateConverter));
 			grid.addRow(2, new BoundLabel(Lang.getBinding("mapgen.filter.method-name")),
 					txtMethod, new BoundComboBox<>(methodPredicateId, stringPredicatesWithNull, textPredicateConverter));
+			grid.addRow(3, new BoundLabel(Lang.getBinding("mapgen.filter.variable-name")),
+					txtVariable, new BoundComboBox<>(variablePredicateId, stringPredicatesWithNull, textPredicateConverter));
 			sink.accept(null, grid);
 		}
 	}
@@ -630,9 +693,11 @@ public class MappingGeneratorPane extends StackPane {
 		private final StringProperty classPredicateId = new SimpleStringProperty();
 		private final StringProperty fieldPredicateId = new SimpleStringProperty();
 		private final StringProperty methodPredicateId = new SimpleStringProperty();
+		private final StringProperty variablePredicateId = new SimpleStringProperty();
 		private final StringProperty className = new SimpleStringProperty("com/example/Foo");
 		private final StringProperty fieldName = new SimpleStringProperty("foo");
 		private final StringProperty methodName = new SimpleStringProperty("getFoo");
+		private final StringProperty variableName = new SimpleStringProperty("fizz");
 
 		@Nonnull
 		@Override
@@ -667,7 +732,18 @@ public class MappingGeneratorPane extends StackPane {
 								else
 									return methodName;
 							}));
-						return Lang.getBinding("misc.ignored");
+						return variablePredicateId.isNotNull().flatMap(hasVariable -> {
+							if (hasVariable)
+								return Bindings.concat(Lang.getBinding("mapgen.filter.includename"), ": ", variablePredicateId.flatMap(key -> {
+									if (StringPredicateProvider.KEY_ANYTHING.equals(key))
+										return Lang.getBinding("string.match.anything");
+									else if (StringPredicateProvider.KEY_NOTHING.equals(key))
+										return Lang.getBinding("string.match.zilch");
+									else
+										return variableName;
+								}));
+							return Lang.getBinding("misc.ignored");
+						});
 					});
 				});
 			});
@@ -679,7 +755,8 @@ public class MappingGeneratorPane extends StackPane {
 			return next -> new IncludeNameFilter(next,
 					classPredicateId.isNotNull().get() ? stringPredicateProvider.newBiStringPredicate(classPredicateId.get(), className.get()) : null,
 					fieldPredicateId.isNotNull().get() ? stringPredicateProvider.newBiStringPredicate(fieldPredicateId.get(), fieldName.get()) : null,
-					methodPredicateId.isNotNull().get() ? stringPredicateProvider.newBiStringPredicate(methodPredicateId.get(), methodName.get()) : null
+					methodPredicateId.isNotNull().get() ? stringPredicateProvider.newBiStringPredicate(methodPredicateId.get(), methodName.get()) : null,
+					variablePredicateId.isNotNull().get() ? stringPredicateProvider.newBiStringPredicate(variablePredicateId.get(), variableName.get()) : null
 			);
 		}
 
@@ -688,6 +765,7 @@ public class MappingGeneratorPane extends StackPane {
 			BoundTextField txtClass = new BoundTextField(className);
 			BoundTextField txtField = new BoundTextField(fieldName);
 			BoundTextField txtMethod = new BoundTextField(methodName);
+			BoundTextField txtVariable = new BoundTextField(variableName);
 			txtClass.disableProperty().bind(classPredicateId.isNull()
 					.or(classPredicateId.isEqualTo(StringPredicateProvider.KEY_ANYTHING))
 					.or(classPredicateId.isEqualTo(StringPredicateProvider.KEY_NOTHING)));
@@ -697,6 +775,10 @@ public class MappingGeneratorPane extends StackPane {
 			txtMethod.disableProperty().bind(methodPredicateId.isNull()
 					.or(methodPredicateId.isEqualTo(StringPredicateProvider.KEY_ANYTHING))
 					.or(methodPredicateId.isEqualTo(StringPredicateProvider.KEY_NOTHING)));
+			txtVariable.disableProperty().bind(variablePredicateId.isNull()
+					.or(variablePredicateId.isEqualTo(StringPredicateProvider.KEY_ANYTHING))
+					.or(variablePredicateId.isEqualTo(StringPredicateProvider.KEY_NOTHING)));
+
 			GridPane grid = new GridPane();
 			grid.setVgap(5);
 			grid.setHgap(5);
@@ -706,6 +788,8 @@ public class MappingGeneratorPane extends StackPane {
 					txtField, new BoundComboBox<>(fieldPredicateId, stringPredicatesWithNull, textPredicateConverter));
 			grid.addRow(2, new BoundLabel(Lang.getBinding("mapgen.filter.method-name")),
 					txtMethod, new BoundComboBox<>(methodPredicateId, stringPredicatesWithNull, textPredicateConverter));
+			grid.addRow(3, new BoundLabel(Lang.getBinding("mapgen.filter.variable-name")),
+					txtMethod, new BoundComboBox<>(variablePredicateId, stringPredicatesWithNull, textPredicateConverter));
 			sink.accept(null, grid);
 		}
 	}
@@ -793,6 +877,7 @@ public class MappingGeneratorPane extends StackPane {
 		private final BooleanProperty classes = new SimpleBooleanProperty(true);
 		private final BooleanProperty fields = new SimpleBooleanProperty(true);
 		private final BooleanProperty methods = new SimpleBooleanProperty(true);
+		private final BooleanProperty variables = new SimpleBooleanProperty(true);
 
 		@Nonnull
 		@Override
@@ -803,7 +888,7 @@ public class MappingGeneratorPane extends StackPane {
 		@Nonnull
 		@Override
 		protected Function<NameGeneratorFilter, IncludeLongNameFilter> makeProvider() {
-			return next -> new IncludeLongNameFilter(next, length.get(), classes.get(), fields.get(), methods.get());
+			return next -> new IncludeLongNameFilter(next, length.get(), classes.get(), fields.get(), methods.get(), variables.get());
 		}
 
 		@Override
@@ -812,6 +897,7 @@ public class MappingGeneratorPane extends StackPane {
 			sink.accept(null, new BoundCheckBox(Lang.getBinding("mapgen.filter.includeclass"), classes));
 			sink.accept(null, new BoundCheckBox(Lang.getBinding("mapgen.filter.includefield"), fields));
 			sink.accept(null, new BoundCheckBox(Lang.getBinding("mapgen.filter.includemethod"), methods));
+			sink.accept(null, new BoundCheckBox(Lang.getBinding("mapgen.filter.includevariable"), variables));
 		}
 	}
 

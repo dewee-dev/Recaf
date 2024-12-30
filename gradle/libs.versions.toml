@@ -1,8 +1,8 @@
 [versions]
-asm = "9.7"
+asm = "9.7.1"
 atlantafx = "2.0.1"
 binary-resources = "31.3.0-alpha01.8"
-cafedude = "2.1.1"
+cafedude = "2.1.3"
 cdi-api = "4.1.0"
 cdi-impl = "6.0.0.Beta4"
 cfr = "0.152"
@@ -19,7 +19,7 @@ image-io-ext-ico = "3.0.2"
 instrument-server = "1.4.2"
 jackson = "2.17.1"
 jakarta-annotation = "3.0.0"
-jasm = "471022383c"
+jasm = "9a413ea936"
 jlinker = "1.0.7"
 jphantom = "1.4.4"
 junit = "5.11.0"
@@ -27,9 +27,9 @@ jsvg = "1.6.1"
 llzip = "2.6.2"
 logback-classic = { strictly = "1.4.11" } # newer releases break in jar releases
 mapping-io = "0.6.1"
-mockito = "5.13.0"
+mockito = "5.14.2"
 natural-order = "1.1"
-openrewrite = "8.36.0"
+openrewrite = "8.40.3"
 picocli = "4.7.6"
 procyon = "0.6.0"
 reactfx = { strictly = "2.0-M5" } # won't get updates, dead
@@ -39,10 +39,10 @@ treemapfx = "1.1.0"
 vineflower = "1.10.1"
 wordwrap = "0.1.12"
 benmanes-versions = "0.42.0"
-gradle-coverage-report-aggregator = "1.3.0"
+gradle-coverage-report-aggregator = "1.3.2"
 gradle-checker-processor = "2.0.2"
 javafx-plugin = "0.1.0"
-shadow = "8.1.1"
+shadow = "8.3.5"
 peterabeles-gversion = "1.10.3"
 
 [libraries]
@@ -163,5 +163,5 @@ benmanes-versions = { id = "com.github.ben-manes.versions", version.ref = "benma
 gradle-coverage-report-aggregator = { id = "gov.tak.gradle.plugins.coverage-report-aggregator", version.ref = "gradle-coverage-report-aggregator" }
 gradle-checker-processor = { id = "gov.tak.gradle.plugins.checker-processor", version.ref = "gradle-checker-processor" }
 javafx = { id = "org.openjfx.javafxplugin", version.ref = "javafx-plugin" }
-shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }
+shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
 peterabeles-gversion = { id = "com.peterabeles.gversion", version.ref = "peterabeles-gversion" }

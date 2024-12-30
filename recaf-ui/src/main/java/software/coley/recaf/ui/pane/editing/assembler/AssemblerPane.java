@@ -29,6 +29,7 @@ import software.coley.recaf.path.PathNode;
 import software.coley.recaf.services.assembler.AssemblerPipeline;
 import software.coley.recaf.services.assembler.AssemblerPipelineManager;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
+import software.coley.recaf.services.inheritance.InheritanceGraphService;
 import software.coley.recaf.services.navigation.ClassNavigable;
 import software.coley.recaf.services.navigation.UpdatableNavigable;
 import software.coley.recaf.services.workspace.WorkspaceManager;
@@ -92,13 +93,14 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	                     @Nonnull KeybindingConfig keys,
 	                     @Nonnull SideTabsInjector sideTabsInjector,
 	                     @Nonnull WorkspaceManager workspaceManager,
-	                     @Nonnull InheritanceGraph graph) {
+	                     @Nonnull InheritanceGraphService graphService) {
 		this.pipelineManager = pipelineManager;
 		this.assemblerToolTabs = assemblerToolTabs;
 
 		int timeToWait = pipelineManager.getServiceConfig().getDisassemblyAstParseDelay().getValue();
 
-		tabCompleter = new AssemblerTabCompleter(Objects.requireNonNull(workspaceManager.getCurrent()), graph);
+		InheritanceGraph inheritanceGraph = Objects.requireNonNull(graphService.getCurrentWorkspaceInheritanceGraph(), "Graph not created");
+		tabCompleter = new AssemblerTabCompleter(Objects.requireNonNull(workspaceManager.getCurrent()), inheritanceGraph);
 		editor.setTabCompleter(tabCompleter);
 		editor.getCodeArea().getStylesheets().add(LanguageStylesheets.getJasmStylesheet());
 		editor.setSelectedBracketTracking(new SelectedBracketTracking());
@@ -230,6 +232,12 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 					assemble();
 			});
 		}
+	}
+
+	@Override
+	public void disable() {
+		super.disable();
+		editor.close();
 	}
 
 	@Nonnull
@@ -447,17 +455,21 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 							String memberType;
 							if (oldMember.isMethod()) {
 								memberType = "method";
-								if (assembledClass.getMethods().size() == methodCount) {
-									newMember = assembledClass.getDeclaredMethod(oldMember.getName(), oldMember.getDescriptor());
-								} else {
-									newMember = null;
+								newMember = assembledClass.getDeclaredMethod(oldMember.getName(), oldMember.getDescriptor());
+								if (methodCount != assembledClass.getMethods().size()){
+									ASTElement sourceAst = lastConcreteAst.get(0);
+									Error err = new Error("Assembling in this context detected a change in the number of methods.\n" +
+											"Check and see if your class has illegal duplicate method definitions.", sourceAst.location());
+									processErrors(List.of(err), ProblemPhase.BUILD);
 								}
 							} else {
 								memberType = "field";
-								if (assembledClass.getFields().size() == fieldCount) {
-									newMember = assembledClass.getDeclaredField(oldMember.getName(), oldMember.getDescriptor());
-								} else {
-									newMember = null;
+								newMember = assembledClass.getDeclaredField(oldMember.getName(), oldMember.getDescriptor());
+								if (fieldCount != assembledClass.getFields().size()){
+									ASTElement sourceAst = lastConcreteAst.get(0);
+									Error err = new Error("Assembling in this context detected a change in the number of fields.\n" +
+											"Check and see if your class has illegal duplicate field definitions.", sourceAst.location());
+									processErrors(List.of(err), ProblemPhase.BUILD);
 								}
 							}
 

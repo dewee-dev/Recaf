@@ -94,11 +94,9 @@ public abstract class AbstractSearchPane extends BorderPane implements Navigable
 	@Override
 	public void disable() {
 		cancelLastSearch();
-		FxThreadUtil.run(() -> {
-			liveResultsTree.setRoot(null);
-			getChildren().clear();
-			setDisable(true);
-		});
+		liveResultsTree.setRoot(null);
+		getChildren().clear();
+		setDisable(true);
 	}
 
 	/**
@@ -182,8 +180,11 @@ public abstract class AbstractSearchPane extends BorderPane implements Navigable
 		CancellableSearchFeedback feedback;
 		if (liveResults.get()) {
 			feedback = new LiveOnlySearchFeedback(result -> {
-				WorkspaceTreeNode node = WorkspaceTreeNode.getOrInsertIntoTree(root, result.getPath(), false);
-				TreeItems.expandParents(node);
+				// Search is multi-threaded, so we will want to lock on the root to prevent concurrent-modification errors
+				synchronized (root) {
+					WorkspaceTreeNode node = WorkspaceTreeNode.getOrInsertIntoTree(root, result.getPath(), false);
+					TreeItems.expandParents(node);
+				}
 			});
 			CompletableFuture.runAsync(() -> searchService.search(workspace, query, feedback));
 		} else {

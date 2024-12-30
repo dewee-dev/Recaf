@@ -4,15 +4,30 @@ import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
+import javafx.scene.control.TreeItem;
 import net.greypanther.natsort.CaseInsensitiveSimpleNaturalComparator;
-import software.coley.recaf.info.*;
-import software.coley.recaf.path.*;
+import software.coley.recaf.info.AndroidClassInfo;
+import software.coley.recaf.info.ClassInfo;
+import software.coley.recaf.info.FileInfo;
+import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.info.Named;
+import software.coley.recaf.path.BundlePathNode;
+import software.coley.recaf.path.ClassPathNode;
+import software.coley.recaf.path.DirectoryPathNode;
+import software.coley.recaf.path.EmbeddedResourceContainerPathNode;
+import software.coley.recaf.path.FilePathNode;
+import software.coley.recaf.path.PathNode;
+import software.coley.recaf.path.PathNodes;
+import software.coley.recaf.path.ResourcePathNode;
+import software.coley.recaf.path.WorkspacePathNode;
 import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.services.workspace.WorkspaceCloseListener;
+import software.coley.recaf.ui.config.KeybindingConfig;
 import software.coley.recaf.ui.config.WorkspaceExplorerConfig;
 import software.coley.recaf.ui.control.PathNodeTree;
 import software.coley.recaf.util.FxThreadUtil;
+import software.coley.recaf.util.NodeEvents;
 import software.coley.recaf.util.StringUtil;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.WorkspaceModificationListener;
@@ -20,7 +35,11 @@ import software.coley.recaf.workspace.model.bundle.AndroidClassBundle;
 import software.coley.recaf.workspace.model.bundle.ClassBundle;
 import software.coley.recaf.workspace.model.bundle.FileBundle;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
-import software.coley.recaf.workspace.model.resource.*;
+import software.coley.recaf.workspace.model.resource.ResourceAndroidClassListener;
+import software.coley.recaf.workspace.model.resource.ResourceFileListener;
+import software.coley.recaf.workspace.model.resource.ResourceJvmClassListener;
+import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
+import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 import java.util.HashMap;
 import java.util.List;
@@ -49,8 +68,17 @@ public class WorkspaceTree extends PathNodeTree implements
 	 */
 	@Inject
 	public WorkspaceTree(@Nonnull CellConfigurationService configurationService, @Nonnull Actions actions,
-	                     @Nonnull WorkspaceExplorerConfig explorerConfig) {
+	                     @Nonnull KeybindingConfig keys, @Nonnull WorkspaceExplorerConfig explorerConfig) {
 		super(configurationService, actions);
+
+		// Additional workspace-explorer specific bind handling
+		NodeEvents.addKeyPressHandler(this, e -> {
+			if (keys.getRename().match(e)) {
+				TreeItem<PathNode<?>> selectedItem = getSelectionModel().getSelectedItem();
+				if (selectedItem != null)
+					actions.rename(selectedItem.getValue());
+			}
+		});
 
 		this.explorerConfig = explorerConfig;
 	}
@@ -211,7 +239,7 @@ public class WorkspaceTree extends PathNodeTree implements
 	@Override
 	public void onRemoveLibrary(@Nonnull Workspace workspace, @Nonnull WorkspaceResource library) {
 		if (isTargetWorkspace(workspace))
-			root.removeNodeByPath(rootPath.child(library));
+			FxThreadUtil.run(() -> root.removeNodeByPath(rootPath.child(library)));
 	}
 
 	@Override
@@ -246,151 +274,163 @@ public class WorkspaceTree extends PathNodeTree implements
 
 	@Override
 	public void onNewFile(@Nonnull WorkspaceResource resource, @Nonnull FileBundle bundle, @Nonnull FileInfo file) {
-		if (isTargetResource(resource))
-			root.getOrCreateNodeByPath(rootPath
-					.child(resource)
-					.child(bundle)
-					.child(interceptDirectoryName(file.getDirectoryName()))
-					.child(file));
-		else {
-			WorkspaceResource containingResource = resource.getContainingResource();
-			if (containingResource != null && isTargetResource(containingResource)) {
+		FxThreadUtil.run(() -> {
+			if (isTargetResource(resource))
 				root.getOrCreateNodeByPath(rootPath
-						.child(containingResource)
-						.embeddedChildContainer()
 						.child(resource)
 						.child(bundle)
 						.child(interceptDirectoryName(file.getDirectoryName()))
 						.child(file));
+			else {
+				WorkspaceResource containingResource = resource.getContainingResource();
+				if (containingResource != null && isTargetResource(containingResource)) {
+					root.getOrCreateNodeByPath(rootPath
+							.child(containingResource)
+							.embeddedChildContainer()
+							.child(resource)
+							.child(bundle)
+							.child(interceptDirectoryName(file.getDirectoryName()))
+							.child(file));
+				}
 			}
-		}
+		});
 	}
 
 	@Override
 	public void onUpdateFile(@Nonnull WorkspaceResource resource, @Nonnull FileBundle bundle, @Nonnull FileInfo oldFile, @Nonnull FileInfo newFile) {
-		if (isTargetResource(resource)) {
-			WorkspaceTreeNode node = root.getOrCreateNodeByPath(rootPath
-					.child(resource)
-					.child(bundle)
-					.child(interceptDirectoryName(oldFile.getDirectoryName()))
-					.child(oldFile));
-			node.setValue(rootPath
-					.child(resource)
-					.child(bundle)
-					.child(newFile.getDirectoryName())
-					.child(newFile));
-		} else {
-			WorkspaceResource containingResource = resource.getContainingResource();
-			if (containingResource != null && isTargetResource(containingResource)) {
-				WorkspaceTreeNode node = root.getOrCreateNodeByPath(rootPath.child(containingResource)
-						.embeddedChildContainer()
+		FxThreadUtil.run(() -> {
+			if (isTargetResource(resource)) {
+				WorkspaceTreeNode node = root.getOrCreateNodeByPath(rootPath
 						.child(resource)
 						.child(bundle)
 						.child(interceptDirectoryName(oldFile.getDirectoryName()))
 						.child(oldFile));
-				node.setValue(rootPath.child(containingResource)
-						.embeddedChildContainer()
+				node.setValue(rootPath
 						.child(resource)
 						.child(bundle)
-						.child(interceptDirectoryName(newFile.getDirectoryName()))
+						.child(newFile.getDirectoryName())
 						.child(newFile));
+			} else {
+				WorkspaceResource containingResource = resource.getContainingResource();
+				if (containingResource != null && isTargetResource(containingResource)) {
+					WorkspaceTreeNode node = root.getOrCreateNodeByPath(rootPath.child(containingResource)
+							.embeddedChildContainer()
+							.child(resource)
+							.child(bundle)
+							.child(interceptDirectoryName(oldFile.getDirectoryName()))
+							.child(oldFile));
+					node.setValue(rootPath.child(containingResource)
+							.embeddedChildContainer()
+							.child(resource)
+							.child(bundle)
+							.child(interceptDirectoryName(newFile.getDirectoryName()))
+							.child(newFile));
+				}
 			}
-		}
+		});
 	}
 
 	@Override
 	public void onRemoveFile(@Nonnull WorkspaceResource resource, @Nonnull FileBundle bundle, @Nonnull FileInfo file) {
-		if (isTargetResource(resource))
-			root.removeNodeByPath(rootPath
-					.child(resource)
-					.child(bundle)
-					.child(interceptDirectoryName(file.getDirectoryName()))
-					.child(file));
-		else {
-			WorkspaceResource containingResource = resource.getContainingResource();
-			if (containingResource != null && isTargetResource(containingResource)) {
+		FxThreadUtil.run(() -> {
+			if (isTargetResource(resource))
 				root.removeNodeByPath(rootPath
-						.child(containingResource)
-						.embeddedChildContainer()
 						.child(resource)
 						.child(bundle)
 						.child(interceptDirectoryName(file.getDirectoryName()))
 						.child(file));
+			else {
+				WorkspaceResource containingResource = resource.getContainingResource();
+				if (containingResource != null && isTargetResource(containingResource)) {
+					root.removeNodeByPath(rootPath
+							.child(containingResource)
+							.embeddedChildContainer()
+							.child(resource)
+							.child(bundle)
+							.child(interceptDirectoryName(file.getDirectoryName()))
+							.child(file));
+				}
 			}
-		}
+		});
 	}
 
 	private void newClass(@Nonnull WorkspaceResource resource, @Nonnull ClassBundle<?> bundle, @Nonnull ClassInfo cls) {
-		if (isTargetResource(resource))
-			root.getOrCreateNodeByPath(rootPath
-					.child(resource)
-					.child(bundle)
-					.child(interceptDirectoryName(cls.getPackageName()))
-					.child(cls));
-		else {
-			WorkspaceResource containingResource = resource.getContainingResource();
-			if (containingResource != null && isTargetResource(containingResource)) {
+		FxThreadUtil.run(() -> {
+			if (isTargetResource(resource))
 				root.getOrCreateNodeByPath(rootPath
-						.child(containingResource)
-						.embeddedChildContainer()
 						.child(resource)
 						.child(bundle)
 						.child(interceptDirectoryName(cls.getPackageName()))
 						.child(cls));
+			else {
+				WorkspaceResource containingResource = resource.getContainingResource();
+				if (containingResource != null && isTargetResource(containingResource)) {
+					root.getOrCreateNodeByPath(rootPath
+							.child(containingResource)
+							.embeddedChildContainer()
+							.child(resource)
+							.child(bundle)
+							.child(interceptDirectoryName(cls.getPackageName()))
+							.child(cls));
+				}
 			}
-		}
+		});
 	}
 
 	private void updateClass(@Nonnull WorkspaceResource resource, @Nonnull ClassBundle<?> bundle, @Nonnull ClassInfo oldCls, @Nonnull ClassInfo newCls) {
-		if (isTargetResource(resource)) {
-			WorkspaceTreeNode node = root.getOrCreateNodeByPath(rootPath
-					.child(resource)
-					.child(bundle)
-					.child(interceptDirectoryName(oldCls.getPackageName()))
-					.child(oldCls));
-			node.setValue(rootPath
-					.child(resource)
-					.child(bundle)
-					.child(newCls.getPackageName())
-					.child(newCls));
-		} else {
-			WorkspaceResource containingResource = resource.getContainingResource();
-			if (containingResource != null && isTargetResource(containingResource)) {
-				WorkspaceTreeNode node = root.getOrCreateNodeByPath(rootPath.child(containingResource)
-						.embeddedChildContainer()
+		FxThreadUtil.run(() -> {
+			if (isTargetResource(resource)) {
+				WorkspaceTreeNode node = root.getOrCreateNodeByPath(rootPath
 						.child(resource)
 						.child(bundle)
 						.child(interceptDirectoryName(oldCls.getPackageName()))
 						.child(oldCls));
-				node.setValue(rootPath.child(containingResource)
-						.embeddedChildContainer()
+				node.setValue(rootPath
 						.child(resource)
 						.child(bundle)
-						.child(interceptDirectoryName(newCls.getPackageName()))
+						.child(newCls.getPackageName())
 						.child(newCls));
+			} else {
+				WorkspaceResource containingResource = resource.getContainingResource();
+				if (containingResource != null && isTargetResource(containingResource)) {
+					WorkspaceTreeNode node = root.getOrCreateNodeByPath(rootPath.child(containingResource)
+							.embeddedChildContainer()
+							.child(resource)
+							.child(bundle)
+							.child(interceptDirectoryName(oldCls.getPackageName()))
+							.child(oldCls));
+					node.setValue(rootPath.child(containingResource)
+							.embeddedChildContainer()
+							.child(resource)
+							.child(bundle)
+							.child(interceptDirectoryName(newCls.getPackageName()))
+							.child(newCls));
+				}
 			}
-		}
+		});
 	}
 
 	private void removeClass(@Nonnull WorkspaceResource resource, @Nonnull ClassBundle<?> bundle, @Nonnull ClassInfo cls) {
-		if (isTargetResource(resource))
-			root.removeNodeByPath(rootPath
-					.child(resource)
-					.child(bundle)
-					.child(interceptDirectoryName(cls.getPackageName()))
-					.child(cls));
-		else {
-			WorkspaceResource containingResource = resource.getContainingResource();
-			if (containingResource != null && isTargetResource(containingResource)) {
+		FxThreadUtil.run(() -> {
+			if (isTargetResource(resource))
 				root.removeNodeByPath(rootPath
-						.child(containingResource)
-						.embeddedChildContainer()
 						.child(resource)
 						.child(bundle)
 						.child(interceptDirectoryName(cls.getPackageName()))
 						.child(cls));
+			else {
+				WorkspaceResource containingResource = resource.getContainingResource();
+				if (containingResource != null && isTargetResource(containingResource)) {
+					root.removeNodeByPath(rootPath
+							.child(containingResource)
+							.embeddedChildContainer()
+							.child(resource)
+							.child(bundle)
+							.child(interceptDirectoryName(cls.getPackageName()))
+							.child(cls));
+				}
 			}
-		}
+		});
 	}
 
 	/**

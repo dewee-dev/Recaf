@@ -1,6 +1,7 @@
 package software.coley.recaf.services.navigation;
 
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -25,12 +26,22 @@ import software.coley.recaf.info.builder.JvmClassInfoBuilder;
 import software.coley.recaf.info.member.ClassMember;
 import software.coley.recaf.info.member.FieldMember;
 import software.coley.recaf.info.member.MethodMember;
-import software.coley.recaf.path.*;
+import software.coley.recaf.path.ClassMemberPathNode;
+import software.coley.recaf.path.ClassPathNode;
+import software.coley.recaf.path.DirectoryPathNode;
+import software.coley.recaf.path.FilePathNode;
+import software.coley.recaf.path.IncompletePathException;
+import software.coley.recaf.path.LineNumberPathNode;
+import software.coley.recaf.path.PathNode;
+import software.coley.recaf.path.PathNodes;
 import software.coley.recaf.services.Service;
+import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.cell.icon.IconProviderService;
 import software.coley.recaf.services.cell.text.TextProviderService;
+import software.coley.recaf.services.inheritance.InheritanceGraph;
 import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.services.mapping.MappingApplier;
+import software.coley.recaf.services.mapping.MappingApplierService;
 import software.coley.recaf.services.mapping.MappingResults;
 import software.coley.recaf.services.window.WindowFactory;
 import software.coley.recaf.ui.control.FontIconView;
@@ -39,6 +50,7 @@ import software.coley.recaf.ui.control.popup.AddMemberPopup;
 import software.coley.recaf.ui.control.popup.ItemListSelectionPopup;
 import software.coley.recaf.ui.control.popup.ItemTreeSelectionPopup;
 import software.coley.recaf.ui.control.popup.NamePopup;
+import software.coley.recaf.ui.control.popup.OverrideMethodPopup;
 import software.coley.recaf.ui.docking.DockingManager;
 import software.coley.recaf.ui.docking.DockingRegion;
 import software.coley.recaf.ui.docking.DockingTab;
@@ -55,16 +67,45 @@ import software.coley.recaf.ui.pane.editing.media.AudioFilePane;
 import software.coley.recaf.ui.pane.editing.media.ImageFilePane;
 import software.coley.recaf.ui.pane.editing.media.VideoFilePane;
 import software.coley.recaf.ui.pane.editing.text.TextFilePane;
-import software.coley.recaf.ui.pane.search.*;
+import software.coley.recaf.ui.pane.search.AbstractSearchPane;
+import software.coley.recaf.ui.pane.search.ClassReferenceSearchPane;
+import software.coley.recaf.ui.pane.search.MemberReferenceSearchPane;
+import software.coley.recaf.ui.pane.search.NumberSearchPane;
+import software.coley.recaf.ui.pane.search.StringSearchPane;
 import software.coley.recaf.ui.window.RecafScene;
-import software.coley.recaf.util.*;
-import software.coley.recaf.util.visitors.*;
+import software.coley.recaf.util.ClipboardUtil;
+import software.coley.recaf.util.EscapeUtil;
+import software.coley.recaf.util.FxThreadUtil;
+import software.coley.recaf.util.Lang;
+import software.coley.recaf.util.SceneUtils;
+import software.coley.recaf.util.StringUtil;
+import software.coley.recaf.util.visitors.ClassAnnotationRemovingVisitor;
+import software.coley.recaf.util.visitors.FieldAnnotationRemovingVisitor;
+import software.coley.recaf.util.visitors.FieldPredicate;
+import software.coley.recaf.util.visitors.MemberCopyingVisitor;
+import software.coley.recaf.util.visitors.MemberRemovingVisitor;
+import software.coley.recaf.util.visitors.MemberStubAddingVisitor;
+import software.coley.recaf.util.visitors.MethodAnnotationRemovingVisitor;
+import software.coley.recaf.util.visitors.MethodNoopingVisitor;
+import software.coley.recaf.util.visitors.MethodPredicate;
 import software.coley.recaf.workspace.PathExportingManager;
+import software.coley.recaf.workspace.model.BasicWorkspace;
 import software.coley.recaf.workspace.model.Workspace;
-import software.coley.recaf.workspace.model.bundle.*;
+import software.coley.recaf.workspace.model.bundle.AndroidClassBundle;
+import software.coley.recaf.workspace.model.bundle.BasicFileBundle;
+import software.coley.recaf.workspace.model.bundle.BasicJvmClassBundle;
+import software.coley.recaf.workspace.model.bundle.Bundle;
+import software.coley.recaf.workspace.model.bundle.ClassBundle;
+import software.coley.recaf.workspace.model.bundle.FileBundle;
+import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
+import software.coley.recaf.workspace.model.resource.WorkspaceResourceBuilder;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -88,8 +129,10 @@ public class Actions implements Service {
 	private final WindowFactory windowFactory;
 	private final TextProviderService textService;
 	private final IconProviderService iconService;
+	private final CellConfigurationService cellConfigurationService;
 	private final PathExportingManager pathExportingManager;
-	private final Instance<MappingApplier> applierProvider;
+	private final MappingApplierService mappingApplierService;
+	private final Instance<InheritanceGraph> inheritanceGraphProvider;
 	private final Instance<JvmClassPane> jvmPaneProvider;
 	private final Instance<AndroidClassPane> androidPaneProvider;
 	private final Instance<BinaryXmlFilePane> binaryXmlPaneProvider;
@@ -114,7 +157,10 @@ public class Actions implements Service {
 	               @Nonnull WindowFactory windowFactory,
 	               @Nonnull TextProviderService textService,
 	               @Nonnull IconProviderService iconService,
+	               @Nonnull CellConfigurationService cellConfigurationService,
 	               @Nonnull PathExportingManager pathExportingManager,
+	               @Nonnull MappingApplierService mappingApplierService,
+	               @Nonnull Instance<InheritanceGraph> inheritanceGraphProvider,
 	               @Nonnull Instance<MappingApplier> applierProvider,
 	               @Nonnull Instance<JvmClassPane> jvmPaneProvider,
 	               @Nonnull Instance<AndroidClassPane> androidPaneProvider,
@@ -137,8 +183,10 @@ public class Actions implements Service {
 		this.windowFactory = windowFactory;
 		this.textService = textService;
 		this.iconService = iconService;
+		this.cellConfigurationService = cellConfigurationService;
 		this.pathExportingManager = pathExportingManager;
-		this.applierProvider = applierProvider;
+		this.mappingApplierService = mappingApplierService;
+		this.inheritanceGraphProvider = inheritanceGraphProvider;
 		this.jvmPaneProvider = jvmPaneProvider;
 		this.androidPaneProvider = androidPaneProvider;
 		this.binaryXmlPaneProvider = binaryXmlPaneProvider;
@@ -749,7 +797,7 @@ public class Actions implements Service {
 					}
 
 					// Apply the mappings.
-					MappingApplier applier = applierProvider.get();
+					MappingApplier applier = mappingApplierService.inWorkspace(workspace);
 					MappingResults results = applier.applyToPrimaryResource(mappings);
 					results.apply();
 				})
@@ -843,7 +891,7 @@ public class Actions implements Service {
 					}
 
 					// Apply the mappings.
-					MappingApplier applier = applierProvider.get();
+					MappingApplier applier = mappingApplierService.inWorkspace(workspace);
 					MappingResults results = applier.applyToPrimaryResource(mappings);
 					results.apply();
 				}).withTitle(Lang.getBinding("dialog.title.move-package"))
@@ -987,7 +1035,7 @@ public class Actions implements Service {
 			}
 
 			// Apply the mappings.
-			MappingApplier applier = applierProvider.get();
+			MappingApplier applier = mappingApplierService.inWorkspace(workspace);
 			MappingResults results = applier.applyToPrimaryResource(mappings);
 			results.apply();
 		};
@@ -1056,7 +1104,7 @@ public class Actions implements Service {
 			mappings.addField(declaringClass.getName(), field.getDescriptor(), originalName, newName);
 
 			// Apply the mappings.
-			MappingApplier applier = applierProvider.get();
+			MappingApplier applier = mappingApplierService.inWorkspace(workspace);
 			MappingResults results = applier.applyToPrimaryResource(mappings);
 			results.apply();
 		};
@@ -1125,7 +1173,7 @@ public class Actions implements Service {
 			mappings.addMethod(declaringClass.getName(), method.getDescriptor(), originalName, newName);
 
 			// Apply the mappings.
-			MappingApplier applier = applierProvider.get();
+			MappingApplier applier = mappingApplierService.inWorkspace(workspace);
 			MappingResults results = applier.applyToPrimaryResource(mappings);
 			results.apply();
 		};
@@ -1313,7 +1361,7 @@ public class Actions implements Service {
 
 			// Apply mappings to create copies of the affected classes, using the provided name.
 			// Then dump the mapped classes into bundle.
-			MappingApplier applier = applierProvider.get();
+			MappingApplier applier = mappingApplierService.inWorkspace(workspace);
 			MappingResults results = applier.applyToPrimaryResource(mappings);
 			results.apply();
 		}).withInitialPathName(packageName)
@@ -1360,7 +1408,7 @@ public class Actions implements Service {
 
 			// Apply mappings to create copies of the affected classes, using the provided name.
 			// Then dump the mapped classes into bundle.
-			MappingApplier applier = applierProvider.get();
+			MappingApplier applier = mappingApplierService.inWorkspace(workspace);
 			MappingResults results = applier.applyToClasses(mappings, resource, bundle, classesToCopy);
 			for (ClassPathNode mappedClassPath : results.getPostMappingPaths().values()) {
 				JvmClassInfo mappedClass = mappedClassPath.getValue().asJvmClass();
@@ -1505,7 +1553,7 @@ public class Actions implements Service {
 
 			// Apply mappings to create copies of the affected classes, using the provided name.
 			// Then dump the mapped classes into bundle.
-			MappingApplier applier = applierProvider.get();
+			MappingApplier applier = mappingApplierService.inWorkspace(workspace);
 			MappingResults results = applier.applyToClasses(mappings, resource, bundle, classesToCopy);
 			for (ClassPathNode mappedClassPath : results.getPostMappingPaths().values()) {
 				JvmClassInfo mappedClass = mappedClassPath.getValue().asJvmClass();
@@ -1645,6 +1693,62 @@ public class Actions implements Service {
 	                        @Nonnull FileBundle bundle,
 	                        @Nonnull FileInfo info) {
 		pathExportingManager.export(info);
+	}
+
+	/**
+	 * Exports a package, prompting the user to select a location to save the file to.
+	 *
+	 * @param workspace
+	 * 		Containing workspace.
+	 * @param resource
+	 * 		Containing resource.
+	 * @param bundle
+	 * 		Containing bundle.
+	 * @param packageName
+	 * 		Name of package to export.
+	 */
+	public void exportPackage(@Nonnull Workspace workspace,
+	                          @Nonnull WorkspaceResource resource,
+	                          @Nonnull JvmClassBundle bundle,
+	                          @Nullable String packageName) {
+		JvmClassBundle bundleCopy = new BasicJvmClassBundle();
+		bundle.valuesAsCopy().forEach(cls -> {
+			if (packageName == null && cls.getPackageName() == null)
+				bundleCopy.put(cls);
+			else if (cls.getName().startsWith(packageName + "/"))
+				bundleCopy.put(cls);
+		});
+		WorkspaceResource resourceCopy = new WorkspaceResourceBuilder().withJvmClassBundle(bundleCopy).build();
+		Workspace workspaceCopy = new BasicWorkspace(resourceCopy);
+		pathExportingManager.export(workspaceCopy, "package", false);
+	}
+
+	/**
+	 * Exports a directory, prompting the user to select a location to save the file to.
+	 *
+	 * @param workspace
+	 * 		Containing workspace.
+	 * @param resource
+	 * 		Containing resource.
+	 * @param bundle
+	 * 		Containing bundle.
+	 * @param directoryName
+	 * 		Name of directory to export.
+	 */
+	public void exportDirectory(@Nonnull Workspace workspace,
+	                            @Nonnull WorkspaceResource resource,
+	                            @Nonnull FileBundle bundle,
+	                            @Nullable String directoryName) {
+		FileBundle bundleCopy = new BasicFileBundle();
+		bundle.valuesAsCopy().forEach(cls -> {
+			if (directoryName == null && cls.getDirectoryName() == null)
+				bundleCopy.put(cls);
+			else if (cls.getName().startsWith(directoryName + "/"))
+				bundleCopy.put(cls);
+		});
+		WorkspaceResource resourceCopy = new WorkspaceResourceBuilder().withFileBundle(bundleCopy).build();
+		Workspace workspaceCopy = new BasicWorkspace(resourceCopy);
+		pathExportingManager.export(workspaceCopy, "directory", false);
 	}
 
 	/**
@@ -1993,6 +2097,42 @@ public class Actions implements Service {
 	}
 
 	/**
+	 * Prompts the user to select a method to override.
+	 *
+	 * @param workspace
+	 * 		Containing workspace.
+	 * @param resource
+	 * 		Containing resource.
+	 * @param bundle
+	 * 		Containing bundle.
+	 * @param info
+	 * 		Class to update.
+	 */
+	public void overrideClassMethod(@Nonnull Workspace workspace,
+	                                @Nonnull WorkspaceResource resource,
+	                                @Nonnull JvmClassBundle bundle,
+	                                @Nonnull JvmClassInfo info) {
+		InheritanceGraph inheritanceGraph = inheritanceGraphProvider.get();
+		if (inheritanceGraph == null)
+			return;
+		new OverrideMethodPopup(this, cellConfigurationService, inheritanceGraph, workspace, info, (methodOwner, method) -> {
+			ClassWriter writer = new ClassWriter(0);
+			info.getClassReader().accept(new MemberStubAddingVisitor(writer, method), 0);
+			JvmClassInfo updatedInfo = info.toJvmClassBuilder()
+					.adaptFrom(writer.toByteArray())
+					.build();
+			bundle.put(updatedInfo);
+
+			// Open the assembler with the new method
+			try {
+				openAssembler(PathNodes.memberPath(workspace, resource, bundle, updatedInfo, method));
+			} catch (IncompletePathException e) {
+				logger.error("Failed to open assembler for new method", e);
+			}
+		}).show();
+	}
+
+	/**
 	 * Makes the given methods no-op.
 	 *
 	 * @param workspace
@@ -2148,7 +2288,7 @@ public class Actions implements Service {
 			return createContent(factory);
 		} else {
 			// Content by path is already open.
-			Navigable navigable = children.get(0);
+			Navigable navigable = children.getFirst();
 			selectTab(navigable);
 			navigable.requestFocus();
 			return navigable;
