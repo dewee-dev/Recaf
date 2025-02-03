@@ -4,8 +4,6 @@ import jakarta.enterprise.inject.Instance;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import software.coley.recaf.services.inheritance.InheritanceGraph;
-import software.coley.recaf.services.mapping.aggregate.AggregateMappingManager;
 import software.coley.recaf.test.TestBase;
 import software.coley.recaf.test.TestClassUtils;
 import software.coley.recaf.test.dummy.HelloWorld;
@@ -54,22 +52,5 @@ class BootstrapTest extends TestBase {
 		// Should no longer be null.
 		assertEquals(workspace, currentWorkspaceInstance.get(),
 				"Workspace manager should expose current workspace as dependent scoped bean");
-	}
-
-	@Test
-	void testGetWorkspaceScopedInstance() {
-		// Get the manager when one workspace is open.
-		workspaceManager.setCurrent(EmptyWorkspace.get());
-		AggregateMappingManager manager1 = unwrapProxy(recaf.get(AggregateMappingManager.class));
-		AggregateMappingManager manager2 = unwrapProxy(recaf.get(AggregateMappingManager.class));
-		assertSame(manager1, manager2, "Graph should be workspace-scoped, but values differ!");
-
-		// Assign a new workspace.
-		// The manager should be different since the prior workspace is closed.
-		workspaceManager.setCurrent(EmptyWorkspace.get());
-		AggregateMappingManager manager3 = unwrapProxy(recaf.get(AggregateMappingManager.class));
-		AggregateMappingManager manager4 = unwrapProxy(recaf.get(AggregateMappingManager.class));
-		assertSame(manager3, manager4, "Graph should be workspace-scoped, but values differ!");
-		assertNotSame(manager1, manager3, "Graph scope from before/after a new workspace yielded the same graph bean!");
 	}
 }

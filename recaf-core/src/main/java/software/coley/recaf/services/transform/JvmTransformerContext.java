@@ -4,11 +4,17 @@ import jakarta.annotation.Nonnull;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.analysis.Frame;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.PathNodes;
 import software.coley.recaf.path.ResourcePathNode;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
+import software.coley.recaf.util.analysis.ReAnalyzer;
+import software.coley.recaf.util.analysis.ReInterpreter;
+import software.coley.recaf.util.analysis.value.ReValue;
+import software.coley.recaf.util.visitors.FrameSkippingVisitor;
 import software.coley.recaf.util.visitors.WorkspaceClassWriter;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
@@ -18,8 +24,10 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -30,6 +38,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class JvmTransformerContext {
 	private final Map<Class<? extends JvmClassTransformer>, JvmClassTransformer> transformerMap;
 	private final Map<String, JvmClassData> classData = new ConcurrentHashMap<>();
+	private final Set<String> recomputeFrameClasses = new HashSet<>();
 	private final Workspace workspace;
 	private final WorkspaceResource resource;
 
@@ -77,8 +86,14 @@ public class JvmTransformerContext {
 			if (data.isDirty()) {
 				if (data.node != null) {
 					// Emit bytecode from the current node
-					ClassWriter writer = new WorkspaceClassWriter(inheritanceGraph, data.initialClass.getClassReader(), 0);
-					data.node.accept(writer);
+					boolean recompute = recomputeFrameClasses.contains(data.node.name);
+					int flags = recompute ? ClassWriter.COMPUTE_FRAMES : 0;
+					ClassReader reader = data.initialClass.getClassReader();
+					ClassWriter writer = new WorkspaceClassWriter(inheritanceGraph, reader, flags);
+					if (recompute)
+						data.node.accept(new FrameSkippingVisitor(writer));
+					else
+						data.node.accept(writer);
 					byte[] modifiedBytes = writer.toByteArray();
 
 					// Update output map
@@ -108,8 +123,57 @@ public class JvmTransformerContext {
 	}
 
 	/**
+	 * @param inheritanceGraph
+	 * 		Inheritance graph of workspace.
+	 * @param cls
+	 * 		Name of class defining a method to analyze.
+	 * @param method
+	 * 		Method to analyze.
+	 *
+	 * @return Analyzed frames of the given method.
+	 *
+	 * @throws TransformationException
+	 * 		When the analyzer throws an exception when computing the frames of the given method.
+	 */
+	@Nonnull
+	public Frame<ReValue>[] analyze(@Nonnull InheritanceGraph inheritanceGraph,
+	                                @Nonnull ClassNode cls,
+	                                @Nonnull MethodNode method) throws TransformationException {
+		try {
+			ReAnalyzer analyzer = newAnalyzer(inheritanceGraph, cls, method);
+			return analyzer.analyze(cls.name, method);
+		} catch (Throwable t) {
+			throw new TransformationException("Error encountered when computing method frames", t);
+		}
+	}
+
+	/**
+	 * @param inheritanceGraph
+	 * 		Inheritance graph of workspace.
+	 * @param cls
+	 * 		Name of class defining a method to analyze.
+	 * @param method
+	 * 		Method to analyze.
+	 *
+	 * @return An analyzer for the given method.
+	 */
+	@Nonnull
+	public ReAnalyzer newAnalyzer(@Nonnull InheritanceGraph inheritanceGraph,
+	                              @Nonnull ClassNode cls,
+	                              @Nonnull MethodNode method) {
+		ReInterpreter interpreter = new ReInterpreter(inheritanceGraph);
+		// TODO: A fleshed out implementation for each to facilitate:
+		//  - interpreter.setInvokeStaticLookup(...);
+		//  - interpreter.setInvokeVirtualLookup(...);
+		//  - interpreter.setGetStaticLookup(...);
+		return new ReAnalyzer(interpreter);
+	}
+
+	/**
 	 * Gets the current ASM node representation of the given class.
+	 * <p/>
 	 * Transformers can update the <i>"current"</i> state of the node via
+	 * {@link #setBytecode(JvmClassBundle, JvmClassInfo, byte[])} or
 	 * {@link #setNode(JvmClassBundle, JvmClassInfo, ClassNode)}.
 	 *
 	 * @param bundle
@@ -128,8 +192,10 @@ public class JvmTransformerContext {
 
 	/**
 	 * Gets the current bytecode of the given class.
+	 * <p/>
 	 * Transformers can update the <i>"current"</i> state of the bytecode via
-	 * {@link #setBytecode(JvmClassBundle, JvmClassInfo, byte[])}.
+	 * {@link #setBytecode(JvmClassBundle, JvmClassInfo, byte[])} or
+	 * {@link #setNode(JvmClassBundle, JvmClassInfo, ClassNode)}.
 	 *
 	 * @param bundle
 	 * 		Bundle containing the class.
@@ -147,8 +213,6 @@ public class JvmTransformerContext {
 
 	/**
 	 * Updates the transformed state of a class by recording an ASM node representation of the class.
-	 * Once the transformation application is completed, the latest value recorded here
-	 * <i>(or in {@link #setBytecode(JvmClassBundle, JvmClassInfo, byte[])}</i> will be dumped into the workspace.
 	 *
 	 * @param bundle
 	 * 		Bundle containing the class.
@@ -165,13 +229,12 @@ public class JvmTransformerContext {
 
 	/**
 	 * Updates the transformed state of a class by recording new bytecode of the class.
-	 * Once the transformation application is completed, the latest value recorded here
-	 * <i>(or in {@link #setNode(JvmClassBundle, JvmClassInfo, ClassNode)})</i> will be dumped into the workspace.
 	 *
 	 * @param bundle
 	 * 		Bundle containing the class.
 	 * @param info
 	 * 		The class's model in the workspace.
+	 * 		This does not need to reflect the updated state of the bytecode, it is strictly used for keying/lookups.
 	 * @param bytecode
 	 * 		Bytecode of the class to store.
 	 *
@@ -193,6 +256,16 @@ public class JvmTransformerContext {
 		JvmClassData data = getJvmClassData(bundle, info);
 		data.setBytecode(data.initialClass.getBytecode());
 		data.dirty = false;
+	}
+
+	/**
+	 * Called by transformers that have more thorough changes applied to classes that likely violate existing frames.
+	 *
+	 * @param className
+	 * 		Name of class to recompute frames for when building the change map.
+	 */
+	public void setRecomputeFrames(@Nonnull String className) {
+		recomputeFrameClasses.add(className);
 	}
 
 	/**
@@ -235,7 +308,7 @@ public class JvmTransformerContext {
 	private static class JvmClassData {
 		private final JvmClassBundle bundle;
 		private final JvmClassInfo initialClass;
-		private byte[] bytecode;
+		private volatile byte[] bytecode;
 		private volatile ClassNode node;
 		private boolean dirty;
 
@@ -268,13 +341,19 @@ public class JvmTransformerContext {
 		}
 
 		/**
-		 * The current bytecode of the class as set by {@link JvmTransformerContext#setBytecode(JvmClassBundle, JvmClassInfo, byte[])}.
-		 * This value does not update when using {@link JvmTransformerContext#setNode(JvmClassBundle, JvmClassInfo, ClassNode)}.
-		 *
 		 * @return Current bytecode of the class.
 		 */
 		@Nonnull
 		public byte[] getBytecode() {
+			if (bytecode == null) {
+				synchronized (this) {
+					if (bytecode == null) {
+						ClassWriter writer = new ClassWriter(0);
+						node.accept(writer);
+						bytecode = writer.toByteArray();
+					}
+				}
+			}
 			return bytecode;
 		}
 
@@ -283,8 +362,11 @@ public class JvmTransformerContext {
 		 * 		Current node representation to set for this class.
 		 */
 		public void setNode(@Nonnull ClassNode node) {
-			this.node = node;
-			dirty = true;
+			synchronized (this) {
+				this.node = node;
+				bytecode = null; // Invalidate bytecode state
+				dirty = true;
+			}
 		}
 
 		/**
@@ -292,9 +374,11 @@ public class JvmTransformerContext {
 		 * 		Current bytecode to set for this class.
 		 */
 		public void setBytecode(@Nonnull byte[] bytecode) {
-			this.bytecode = bytecode;
-			node = null; // Invalidate node state
-			dirty = true;
+			synchronized (this) {
+				this.bytecode = bytecode;
+				node = null; // Invalidate node state
+				dirty = true;
+			}
 		}
 
 		/**

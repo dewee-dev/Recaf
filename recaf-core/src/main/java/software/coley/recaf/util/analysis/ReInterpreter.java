@@ -31,6 +31,7 @@ import software.coley.recaf.util.analysis.lookup.InvokeVirtualLookup;
 import software.coley.recaf.util.analysis.value.ArrayValue;
 import software.coley.recaf.util.analysis.value.DoubleValue;
 import software.coley.recaf.util.analysis.value.FloatValue;
+import software.coley.recaf.util.analysis.value.IllegalValueException;
 import software.coley.recaf.util.analysis.value.IntValue;
 import software.coley.recaf.util.analysis.value.LongValue;
 import software.coley.recaf.util.analysis.value.ObjectValue;
@@ -86,18 +87,11 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 
 	@Nullable
 	public ReValue newValue(@Nullable Type type, @Nonnull Nullness nullness) {
-		if (type == null)
-			return UninitializedValue.UNINITIALIZED_VALUE;
-		return switch (type.getSort()) {
-			case Type.VOID -> null;
-			case Type.BOOLEAN, Type.CHAR, Type.BYTE, Type.SHORT, Type.INT -> IntValue.UNKNOWN;
-			case Type.FLOAT -> FloatValue.UNKNOWN;
-			case Type.LONG -> LongValue.UNKNOWN;
-			case Type.DOUBLE -> DoubleValue.UNKNOWN;
-			case Type.ARRAY -> ArrayValue.of(type, nullness);
-			case Type.OBJECT -> ObjectValue.object(type, nullness);
-			default -> throw new IllegalArgumentException("Invalid type for new value: " + type);
-		};
+		try {
+			return ReValue.ofType(type, nullness);
+		} catch (IllegalValueException ex) {
+			throw new IllegalStateException(ex);
+		}
 	}
 
 	@Override
@@ -290,7 +284,7 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 				return null;
 			case GETFIELD: {
 				FieldInsnNode field = (FieldInsnNode) insn;
-				if (getFieldLookup != null)
+				if (getFieldLookup != null && value.hasKnownValue())
 					return getFieldLookup.get(field, value);
 				Type fieldType = Type.getType(field.desc);
 				return newValue(fieldType);
@@ -515,9 +509,9 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 			return newValue(returnType);
 		} else {
 			MethodInsnNode method = (MethodInsnNode) insn;
-			if (opcode == INVOKESTATIC && invokeStaticLookup != null) {
+			if (opcode == INVOKESTATIC && invokeStaticLookup != null && values.stream().allMatch(ReValue::hasKnownValue)) {
 				return invokeStaticLookup.get(method, values);
-			} else if (opcode == INVOKEVIRTUAL && invokeVirtualLookup != null) {
+			} else if (opcode == INVOKEVIRTUAL && invokeVirtualLookup != null && values.stream().allMatch(ReValue::hasKnownValue)) {
 				return invokeVirtualLookup.get(method, values.getFirst(), values.subList(1, values.size()));
 			}
 			Type returnType = Type.getReturnType(((MethodInsnNode) insn).desc);

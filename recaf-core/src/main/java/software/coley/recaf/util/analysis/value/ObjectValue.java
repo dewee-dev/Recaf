@@ -101,6 +101,10 @@ public non-sealed interface ObjectValue extends ReValue {
 		return new ObjectValueImpl(type, nullness);
 	}
 
+	@Nonnull
+	@Override
+	Type type();
+
 	/**
 	 * @return Null state of this value.
 	 */
@@ -112,6 +116,13 @@ public non-sealed interface ObjectValue extends ReValue {
 	 */
 	default boolean isNull() {
 		return nullness() == Nullness.NULL;
+	}
+
+	/**
+	 * @return {@code true} when this value is known to be <b>not</b> {@code null}.
+	 */
+	default boolean isNotNull() {
+		return nullness() == Nullness.NOT_NULL;
 	}
 
 	@Override

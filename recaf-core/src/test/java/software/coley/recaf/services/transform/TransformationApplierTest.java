@@ -135,7 +135,7 @@ class TransformationApplierTest extends TestBase {
 		@Override
 		public void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
 		                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
-		                      @Nonnull JvmClassInfo classInfo) {
+		                      @Nonnull JvmClassInfo initialClassState) {
 			// no-op
 		}
 
@@ -151,7 +151,7 @@ class TransformationApplierTest extends TestBase {
 		@Override
 		public void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
 		                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
-		                      @Nonnull JvmClassInfo classInfo) {
+		                      @Nonnull JvmClassInfo initialClassState) {
 			// no-op
 		}
 
@@ -167,13 +167,13 @@ class TransformationApplierTest extends TestBase {
 		@Override
 		public void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
 		                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
-		                      @Nonnull JvmClassInfo classInfo) {
+		                      @Nonnull JvmClassInfo initialClassState) {
 			// no-op
 		}
 
 		@Nonnull
 		@Override
-		public Set<Class<? extends JvmClassTransformer>> dependencies() {
+		public Set<Class<? extends ClassTransformer>> dependencies() {
 			return Collections.singleton(JvmTransformerA.class);
 		}
 
@@ -189,13 +189,13 @@ class TransformationApplierTest extends TestBase {
 		@Override
 		public void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
 		                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
-		                      @Nonnull JvmClassInfo classInfo) {
+		                      @Nonnull JvmClassInfo initialClassState) {
 			// no-op
 		}
 
 		@Nonnull
 		@Override
-		public Set<Class<? extends JvmClassTransformer>> dependencies() {
+		public Set<Class<? extends ClassTransformer>> dependencies() {
 			return Collections.singleton(JvmCycleSingle.class);
 		}
 
@@ -211,13 +211,13 @@ class TransformationApplierTest extends TestBase {
 		@Override
 		public void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
 		                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
-		                      @Nonnull JvmClassInfo classInfo) {
+		                      @Nonnull JvmClassInfo initialClassState) {
 			// no-op
 		}
 
 		@Nonnull
 		@Override
-		public Set<Class<? extends JvmClassTransformer>> dependencies() {
+		public Set<Class<? extends ClassTransformer>> dependencies() {
 			return Collections.singleton(JvmCycleB.class);
 		}
 
@@ -233,13 +233,13 @@ class TransformationApplierTest extends TestBase {
 		@Override
 		public void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
 		                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
-		                      @Nonnull JvmClassInfo classInfo) {
+		                      @Nonnull JvmClassInfo initialClassState) {
 			// no-op
 		}
 
 		@Nonnull
 		@Override
-		public Set<Class<? extends JvmClassTransformer>> dependencies() {
+		public Set<Class<? extends ClassTransformer>> dependencies() {
 			return Collections.singleton(JvmCycleA.class);
 		}
 

@@ -1,18 +1,16 @@
-package software.coley.recaf.services.deobfuscation.builtin;
+package software.coley.recaf.services.deobfuscation.transform.generic;
 
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
-import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
-import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
-import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.analysis.Frame;
+import software.coley.collections.Unchecked;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.member.FieldMember;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
@@ -23,18 +21,12 @@ import software.coley.recaf.services.transform.TransformationException;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.util.analysis.ReAnalyzer;
 import software.coley.recaf.util.analysis.ReInterpreter;
-import software.coley.recaf.util.analysis.value.DoubleValue;
-import software.coley.recaf.util.analysis.value.FloatValue;
-import software.coley.recaf.util.analysis.value.IntValue;
-import software.coley.recaf.util.analysis.value.LongValue;
-import software.coley.recaf.util.analysis.value.ObjectValue;
 import software.coley.recaf.util.analysis.value.ReValue;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -58,6 +50,16 @@ public class StaticValueCollectionTransformer implements JvmClassTransformer {
 		this.graphService = graphService;
 	}
 
+	/**
+	 * @param className
+	 * 		Name of class defining the field.
+	 * @param fieldName
+	 * 		Field name.
+	 * @param fieldDesc
+	 * 		Field descriptor.
+	 *
+	 * @return Static value wrapper if known, otherwise {@code null}.
+	 */
 	@Nullable
 	public ReValue getStaticValue(@Nonnull String className, @Nonnull String fieldName, @Nonnull String fieldDesc) {
 		StaticValues values = classValues.get(className);
@@ -76,7 +78,7 @@ public class StaticValueCollectionTransformer implements JvmClassTransformer {
 	@Override
 	public void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
 	                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
-	                      @Nonnull JvmClassInfo classInfo) throws TransformationException {
+	                      @Nonnull JvmClassInfo initialClassState) throws TransformationException {
 		StaticValues valuesContainer = new StaticValues();
 		EffectivelyFinalFields finalContainer = new EffectivelyFinalFields();
 
@@ -87,7 +89,7 @@ public class StaticValueCollectionTransformer implements JvmClassTransformer {
 		//    - will be slower, but it will be opt-in and off by default
 
 		// Populate initial values based on field's default value attribute
-		for (FieldMember field : classInfo.getFields()) {
+		for (FieldMember field : initialClassState.getFields()) {
 			if (!field.hasStaticModifier())
 				continue;
 
@@ -99,6 +101,8 @@ public class StaticValueCollectionTransformer implements JvmClassTransformer {
 				// We can only assume private fields are effectively-final if nothing outside the <clinit> writes to them.
 				// Any other level of access can be written to by child classes or classes in the same package.
 				finalContainer.addMaybe(field.getName(), field.getDescriptor());
+			// TODO: As mentioned above, we can add another 'else' case here for non-private fields
+			//  but then we need to make sure no other classes write to those fields. So its more computational work...
 
 			// Skip if there is no default value
 			Object defaultValue = field.getDefaultValue();
@@ -106,7 +110,7 @@ public class StaticValueCollectionTransformer implements JvmClassTransformer {
 				continue;
 
 			// Skip if the value cannot be mapped to our representation
-			ReValue mappedValue = extractFromAsmConstant(defaultValue);
+			ReValue mappedValue = Unchecked.getOr(() -> ReValue.ofConstant(defaultValue), null);
 			if (mappedValue == null)
 				continue;
 
@@ -115,9 +119,9 @@ public class StaticValueCollectionTransformer implements JvmClassTransformer {
 		}
 
 		// Visit <clinit> of classes and collect static field values of primitives
-		String className = classInfo.getName();
-		if (classInfo.getDeclaredMethod("<clinit>", "()V") != null) {
-			ClassNode node = context.getNode(bundle, classInfo);
+		String className = initialClassState.getName();
+		if (initialClassState.getDeclaredMethod("<clinit>", "()V") != null) {
+			ClassNode node = context.getNode(bundle, initialClassState);
 
 			// Find the static initializer and determine which fields are "effectively-final"
 			MethodNode clinit = null;
@@ -142,10 +146,10 @@ public class StaticValueCollectionTransformer implements JvmClassTransformer {
 
 			// Only analyze if we see static setters
 			if (clinit != null && hasStaticSetters(clinit)) {
-				ReInterpreter interpreter = new ReInterpreter(inheritanceGraph);
-				ReAnalyzer analyzer = new ReAnalyzer(interpreter);
 				try {
-					Frame<ReValue>[] frames = analyzer.analyze(className, clinit);
+					ReAnalyzer analyzer = context.newAnalyzer(inheritanceGraph, node, clinit);
+					ReInterpreter interpreter = analyzer.getInterpreter();
+					Frame<ReValue>[] frames = analyzer.analyze(node.name, clinit);
 					AbstractInsnNode[] instructions = clinit.instructions.toArray();
 					for (int i = 0; i < instructions.length; i++) {
 						AbstractInsnNode instruction = instructions[i];
@@ -169,7 +173,7 @@ public class StaticValueCollectionTransformer implements JvmClassTransformer {
 						}
 					}
 				} catch (Throwable t) {
-					throw new TransformationException("Analysis failure", t);
+					throw new TransformationException("Error encountered when computing static constants", t);
 				}
 			}
 		}
@@ -197,38 +201,6 @@ public class StaticValueCollectionTransformer implements JvmClassTransformer {
 		for (AbstractInsnNode abstractInsnNode : method.instructions)
 			if (abstractInsnNode.getOpcode() == Opcodes.PUTSTATIC) return true;
 		return false;
-	}
-
-	/**
-	 * @param value
-	 * 		ASM constant value.
-	 *
-	 * @return A {@link ReValue} wrapper of the given input,
-	 * or {@code null} if the value could not be represented.
-	 *
-	 * @see LdcInsnNode#cst Possible values
-	 */
-	@Nullable
-	private static ReValue extractFromAsmConstant(Object value) {
-		if (value instanceof String s)
-			return ObjectValue.string(s);
-		if (value instanceof Integer i)
-			return IntValue.of(i);
-		if (value instanceof Float f)
-			return FloatValue.of(f);
-		if (value instanceof Long l)
-			return LongValue.of(l);
-		if (value instanceof Double d)
-			return DoubleValue.of(d);
-		if (value instanceof Type type) {
-			if (type.getSort() == Type.METHOD)
-				return ObjectValue.VAL_METHOD_TYPE;
-			else
-				return ObjectValue.VAL_CLASS;
-		}
-		if (value instanceof Handle handle)
-			return ObjectValue.VAL_METHOD_HANDLE;
-		return null;
 	}
 
 	/**

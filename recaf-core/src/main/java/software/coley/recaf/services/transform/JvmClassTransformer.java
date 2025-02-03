@@ -7,15 +7,12 @@ import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
-import java.util.Collections;
-import java.util.Set;
-
 /**
  * Outlines the base JVM transformation contract.
  *
  * @author Matt Coley
  */
-public interface JvmClassTransformer {
+public interface JvmClassTransformer extends ClassTransformer {
 	/**
 	 * Used to do any workspace-scope setup actions before transformations occur.
 	 *
@@ -45,27 +42,17 @@ public interface JvmClassTransformer {
 	 * 		Resource containing the class.
 	 * @param bundle
 	 * 		Bundle containing the class.
-	 * @param classInfo
-	 * 		The class to transform.
+	 * @param initialClassState
+	 * 		The initial state of the class to transform.
+	 * 		Do not use this as the base of any transformation.
+	 * 		Use {@link JvmTransformerContext#getNode(JvmClassBundle, JvmClassInfo)}
+	 * 		or {@link JvmTransformerContext#getBytecode(JvmClassBundle, JvmClassInfo)}
+	 * 		to look up the current transformed state of the class.
 	 *
 	 * @throws TransformationException
 	 * 		When the class cannot be transformed for any reason.
 	 */
 	void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
 	               @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
-	               @Nonnull JvmClassInfo classInfo) throws TransformationException;
-
-	/**
-	 * @return Name of the transformer.
-	 */
-	@Nonnull
-	String name();
-
-	/**
-	 * @return Set of transformer classes that must run before this one.
-	 */
-	@Nonnull
-	default Set<Class<? extends JvmClassTransformer>> dependencies() {
-		return Collections.emptySet();
-	}
+	               @Nonnull JvmClassInfo initialClassState) throws TransformationException;
 }

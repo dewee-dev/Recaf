@@ -8,6 +8,7 @@ import software.coley.recaf.test.TestBase;
 import software.coley.recaf.workspace.model.EmptyWorkspace;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Tests for {@link AggregateMappingManager}
@@ -19,8 +20,9 @@ public class AggregateMappingManagerTest extends TestBase {
 
 	@BeforeEach
 	void setupPerTest() {
-		workspaceManager.setCurrent(EmptyWorkspace.get());
 		aggregateMappingManager = recaf.get(AggregateMappingManager.class);
+		assertNotNull(aggregateMappingManager.toString()); // Bogus call to initialize the aggregate mapping manager
+		workspaceManager.setCurrent(EmptyWorkspace.get());
 	}
 
 	@AfterEach
@@ -37,10 +39,12 @@ public class AggregateMappingManagerTest extends TestBase {
 
 		// 'a' renamed to 'b'
 		mappings1.addClass("a", "b");
+
 		// 'b' renamed to 'c', so 'a' is now 'c'
 		// but also rename the field 'oldName' to 'newName'
 		mappings2.addClass("b", "c");
 		mappings2.addField("b", "I", "oldName", "newName");
+
 		// 'c' renamed to 'd'
 		// but also rename the field from before to 'brandNewName'
 		mappings3.addClass("c", "d");
@@ -48,13 +52,17 @@ public class AggregateMappingManagerTest extends TestBase {
 
 		// Get aggregate instance from manager
 		AggregatedMappings aggregated = aggregateMappingManager.getAggregatedMappings();
+		assertNotNull(aggregated);
+
 		// Validate after first mapping pass
 		aggregateMappingManager.updateAggregateMappings(mappings1);
 		assertEquals("b", aggregated.getMappedClassName("a"));
+
 		// Validate after second mapping pass
 		aggregateMappingManager.updateAggregateMappings(mappings2);
 		assertEquals("c", aggregated.getMappedClassName("a"));
 		assertEquals("newName", aggregated.getMappedFieldName("a", "oldName", "I"));
+
 		// Validate after third mapping pass
 		aggregateMappingManager.updateAggregateMappings(mappings3);
 		assertEquals("d", aggregated.getMappedClassName("a"));
@@ -70,10 +78,12 @@ public class AggregateMappingManagerTest extends TestBase {
 
 		// 'a' renamed to 'b'
 		mappings1.addClass("a", "b");
+
 		// 'b' renamed to 'c', so 'a' is now 'c'
 		// but also rename the method 'obf' to 'factory'
 		mappings2.addClass("b", "c");
 		mappings2.addMethod("b", "()Lb;", "obf", "factory");
+
 		// 'c' renamed to 'd'
 		// but also rename the method from before to 'getInstance'
 		mappings3.addClass("c", "d");
@@ -81,13 +91,17 @@ public class AggregateMappingManagerTest extends TestBase {
 
 		// Get aggregate instance from manager
 		AggregatedMappings aggregated = aggregateMappingManager.getAggregatedMappings();
+		assertNotNull(aggregated);
+
 		// Validate after first mapping pass
 		aggregateMappingManager.updateAggregateMappings(mappings1);
 		assertEquals("b", aggregated.getMappedClassName("a"));
+
 		// Validate after second mapping pass
 		aggregateMappingManager.updateAggregateMappings(mappings2);
 		assertEquals("c", aggregated.getMappedClassName("a"));
 		assertEquals("factory", aggregated.getMappedMethodName("a", "obf", "()La;"));
+
 		// Validate after third mapping pass
 		aggregateMappingManager.updateAggregateMappings(mappings3);
 		assertEquals("d", aggregated.getMappedClassName("a"));

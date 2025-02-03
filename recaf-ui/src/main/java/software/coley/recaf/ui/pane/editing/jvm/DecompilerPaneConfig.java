@@ -8,7 +8,7 @@ import software.coley.observables.ObservableInteger;
 import software.coley.recaf.config.BasicConfigContainer;
 import software.coley.recaf.config.BasicConfigValue;
 import software.coley.recaf.config.ConfigGroups;
-import software.coley.recaf.services.source.AstMappingVisitor;
+import software.coley.recaf.services.source.AstMapper;
 import software.coley.recaf.ui.control.richtext.Editor;
 import software.coley.recaf.ui.pane.editing.android.AndroidDecompilerPane;
 import software.coley.recaf.util.DevDetection;
@@ -21,7 +21,7 @@ import software.coley.recaf.util.DevDetection;
 @ApplicationScoped
 public class DecompilerPaneConfig extends BasicConfigContainer {
 	private final ObservableInteger timeoutSeconds = new ObservableInteger(60);
-	private final ObservableBoolean useMappingAcceleration = new ObservableBoolean(true);
+	private final ObservableBoolean useMappingAcceleration = new ObservableBoolean(false);
 	private final ObservableBoolean acknowledgedSaveWithErrors = new ObservableBoolean(DevDetection.isDevEnv());
 
 	@Inject
@@ -49,7 +49,7 @@ public class DecompilerPaneConfig extends BasicConfigContainer {
 	}
 
 	/**
-	 * @return Flag indicating if {@link AstMappingVisitor} should be used to update {@link Editor#getText()}
+	 * @return Flag indicating if {@link AstMapper} should be used to update {@link Editor#getText()}
 	 * instead of decompiling the new remapped class. Generally faster, but can be inaccurate in some edge cases.
 	 */
 	@Nonnull

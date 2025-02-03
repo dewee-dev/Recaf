@@ -16,6 +16,7 @@ dependencies {
     api(libs.dex.translator) {
         exclude group: 'com.android.tools'
     }
+    api(libs.diffutils)
     api(libs.directories)
     api(libs.downgrader) {
         exclude group: 'org.ow2.asm'
@@ -27,26 +28,22 @@ dependencies {
     api(libs.gson) // required by R8 (from dex-translator)
     api(libs.instrument.server)
     api(libs.jphantom)
-    api(libs.llzip)
+    api(libs.lljzip)
     api(libs.bundles.logging)
     api(libs.mapping.io)
     api(libs.natural.order)
     api(libs.picocli)
     api(libs.procyon)
-    api(libs.jackson)
     api(libs.jlinker)
-    api(libs.openrewrite) {
-        exclude group: 'net.java.dev.jna'
-        exclude group: 'org.latencyutils'
-        exclude group: 'org.openrewrite', module: 'rewrite-yaml'
-        exclude group: 'org.openrewrite', module: 'rewrite-xml'
-        exclude group: 'org.xerial.snappy'
-        exclude group: 'org.yaml'
-    }
     api(libs.regex)
     api(libs.bundles.jasm)
     api(libs.vineflower)
     api(libs.wordwrap)
+    api(libs.sourcesolver)
+
+    // We use Jackson as a test dependency so that we can convert Android API XML models into JSON.
+    // This way, we only need to include GSON in the final Recaf build.
+    testImplementation(libs.jackson)
 }
 
 // Force generation of gversion data class when the version information is not up-to-date

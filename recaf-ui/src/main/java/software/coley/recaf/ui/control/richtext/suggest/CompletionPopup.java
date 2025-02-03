@@ -1,17 +1,21 @@
 package software.coley.recaf.ui.control.richtext.suggest;
 
+import com.sun.javafx.util.Utils;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import javafx.geometry.BoundingBox;
 import javafx.geometry.Bounds;
+import javafx.geometry.Rectangle2D;
 import javafx.scene.Node;
 import javafx.scene.control.IndexRange;
+import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseEvent;
 import javafx.stage.Popup;
+import javafx.stage.Screen;
 import org.fxmisc.richtext.CodeArea;
 import software.coley.recaf.ui.control.richtext.Editor;
 
@@ -35,7 +39,7 @@ public abstract class CompletionPopup<T> {
 	private final ListView<T> listView = new ListView<>();
 	private final ScrollPane scrollPane = new ScrollPane(listView);
 	private final CompletionValueTextifier<T> textifier;
-	private final int maxItemsToShow;
+	private final TabCompletionConfig config;
 	private final int cellSize;
 	private CompletionPopupFocuser completionPopupFocuser;
 	private CompletionPopupUpdater<T> completionPopupUpdater;
@@ -45,15 +49,32 @@ public abstract class CompletionPopup<T> {
 	private T selected;
 
 	/**
+	 * @param config
+	 * 		Tab completion config.
 	 * @param cellSize
 	 * 		Height of cells in the list-view of completion items.
-	 * @param maxItemsToShow
-	 * 		Number of cells to show at a time.
 	 * @param textifier
 	 * 		Mapper of {@code T} values to {@code String}.
 	 */
-	public CompletionPopup(int cellSize, int maxItemsToShow, @Nonnull CompletionValueTextifier<T> textifier) {
-		this.maxItemsToShow = maxItemsToShow;
+	public CompletionPopup(@Nonnull TabCompletionConfig config, int cellSize,
+	                       @Nonnull CompletionValueTextifier<T> textifier) {
+		this(config, cellSize, textifier, t -> null);
+	}
+
+	/**
+	 * @param config
+	 * 		Tab completion config.
+	 * @param cellSize
+	 * 		Height of cells in the list-view of completion items.
+	 * @param textifier
+	 * 		Mapper of {@code T} values to {@code String}.
+	 * @param graphifier
+	 * 		Mapper of {@code T} values to display graphics.
+	 */
+	public CompletionPopup(@Nonnull TabCompletionConfig config, int cellSize,
+	                       @Nonnull CompletionValueTextifier<T> textifier,
+	                       @Nonnull CompletionValueGraphicMapper<T> graphifier) {
+		this.config = config;
 		this.textifier = textifier;
 
 		// Ensure scroll-pane is 'fit-to-height' so there's no empty space wasting virtual scroll space.
@@ -64,6 +85,10 @@ public abstract class CompletionPopup<T> {
 		// Auto-hide covers most cases that would be hard to otherwise detect
 		// and isn't overly aggressive to hide it too often.
 		popup.setAutoHide(true);
+
+		// Auto-fix can move the popup infront of the caret, which is not what we want.
+		// In #show() we will manually adjust the position of the popup to ensure it is on screen.
+		popup.setAutoFix(false);
 
 		// For simplicity of a few operations we're going to ensure all cells are a fixed size.
 		listView.setFixedCellSize(this.cellSize = cellSize);
@@ -92,6 +117,21 @@ public abstract class CompletionPopup<T> {
 
 				// Multi-key action like 'Control Z' fail if we consume the event.
 				if (!event.isControlDown()) event.consume();
+			}
+		});
+
+		// Map the completion values to a nicer display format.
+		listView.setCellFactory(v -> new ListCell<>() {
+			@Override
+			protected void updateItem(T item, boolean empty) {
+				super.updateItem(item, empty);
+				if (empty || item == null) {
+					setText(null);
+					setGraphic(null);
+				} else {
+					setText(textifier.toText(item));
+					setGraphic(graphifier.toGraphic(item));
+				}
 			}
 		});
 	}
@@ -195,9 +235,39 @@ public abstract class CompletionPopup<T> {
 	 * @see Popup#show(Node, double, double)
 	 */
 	public void show() {
-		// If the popup has content to show, show it above where the caret position is.
-		if (popupSize > 0)
-			popup.show(area, lastCaretBounds.getMinX(), lastCaretBounds.getMinY() - popupSize);
+		// Do nothing if there is no content to display (popup size calculated to be 0)
+		if (popupSize <= 0)
+			return;
+
+		double anchorX = config.getPopupPosition().isRight()
+				? lastCaretBounds.getMaxX()
+				: lastCaretBounds.getMinX() - popup.getWidth();
+		double anchorY = config.getPopupPosition().isAbove()
+				? lastCaretBounds.getMinY() - popupSize
+				: lastCaretBounds.getMaxY();
+
+		// Choose another position if the popup is off-screen.
+		// if the popup is off-screen, flip the popup to the other side of the caret on that axis
+		// (it will also avoid popup from being split between two screens)
+		//
+		// Code loosely adapted from PopupWindow#updateWindow(double, double)
+		final Screen currentScreen = Utils.getScreenForPoint(anchorX, anchorY);
+		final Rectangle2D screenBounds =
+				Utils.hasFullScreenStage(currentScreen)
+						? currentScreen.getBounds()
+						: currentScreen.getVisualBounds();
+		if (anchorY + popupSize > screenBounds.getMaxY()) {
+			anchorY = lastCaretBounds.getMinY() - popupSize;
+		} else if (anchorY < screenBounds.getMinY()) {
+			anchorY = lastCaretBounds.getMaxY();
+		}
+		if (anchorX + popup.getWidth() > screenBounds.getMaxX()) {
+			anchorX = lastCaretBounds.getMinX() - popup.getWidth();
+		} else if (anchorX < screenBounds.getMinX()) {
+			anchorX = lastCaretBounds.getMaxX();
+		}
+
+		popup.show(area, anchorX, anchorY);
 	}
 
 	/**
@@ -253,7 +323,7 @@ public abstract class CompletionPopup<T> {
 		//  - Needs a bit of padding due to the way borders/scrollbars render
 		// The scollpane should be dictating the size since it is the popup content root.
 		int itemCount = items.size();
-		popupSize = cellSize * (Math.min(itemCount, maxItemsToShow) + 1);
+		popupSize = cellSize * (Math.min(itemCount, config.getMaxCompletionRows()) + 1);
 		scrollPane.setPrefHeight(popupSize);
 		scrollPane.setMaxHeight(popupSize);
 
@@ -303,8 +373,29 @@ public abstract class CompletionPopup<T> {
 	}
 
 	protected boolean complete(@Nonnull String partialText, @Nonnull String fullText) {
-		if (!fullText.startsWith(partialText))
+		// Skip if the partial text (the current line) does not represent a substring of the text to complete (the full text)
+		if (!fullText.startsWith(partialText)) {
+			// If the current partial text has separators, check if the full text completion
+			// begins at a point AFTER the separator.
+			int space = partialText.indexOf(' ');
+			if (space >= 0)
+				return complete(partialText.substring(space + 1), fullText);
+			int dot = partialText.indexOf('.');
+			if (dot >= 0)
+				return complete(partialText.substring(dot + 1), fullText);
+
+			// If the partial text has no separators, check if the full text completion  has separators.
+			// If it does, then we'll try to complete a substring of the original completion starting at the separator.
+			space = fullText.indexOf(' ');
+			if (space >= 0)
+				return complete(partialText, fullText.substring(space + 1));
+			dot = fullText.indexOf('.');
+			if (dot >= 0)
+				return complete(partialText, fullText.substring(dot + 1));
+
+			// No sub-sequence of the existing partial text and the text to complete matches.
 			return false;
+		}
 
 		// Insert the rest of the text.
 		String remainingWordText = fullText.substring(partialText.length());

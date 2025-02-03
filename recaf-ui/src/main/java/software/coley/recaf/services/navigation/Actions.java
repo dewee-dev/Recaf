@@ -15,6 +15,7 @@ import javafx.scene.control.Tab;
 import javafx.stage.Stage;
 import org.kordamp.ikonli.Ikon;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
+import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.slf4j.Logger;
 import software.coley.collections.Unchecked;
@@ -39,11 +40,13 @@ import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.cell.icon.IconProviderService;
 import software.coley.recaf.services.cell.text.TextProviderService;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
+import software.coley.recaf.services.inheritance.InheritanceGraphService;
 import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.services.mapping.MappingApplier;
 import software.coley.recaf.services.mapping.MappingApplierService;
 import software.coley.recaf.services.mapping.MappingResults;
 import software.coley.recaf.services.window.WindowFactory;
+import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.control.graph.MethodCallGraphsPane;
 import software.coley.recaf.ui.control.popup.AddMemberPopup;
@@ -124,6 +127,7 @@ import static software.coley.recaf.util.StringUtil.*;
 public class Actions implements Service {
 	public static final String ID = "actions";
 	private static final Logger logger = Logging.get(Actions.class);
+	private final WorkspaceManager workspaceManager;
 	private final NavigationManager navigationManager;
 	private final DockingManager dockingManager;
 	private final WindowFactory windowFactory;
@@ -132,7 +136,7 @@ public class Actions implements Service {
 	private final CellConfigurationService cellConfigurationService;
 	private final PathExportingManager pathExportingManager;
 	private final MappingApplierService mappingApplierService;
-	private final Instance<InheritanceGraph> inheritanceGraphProvider;
+	private final InheritanceGraphService inheritanceGraphService;
 	private final Instance<JvmClassPane> jvmPaneProvider;
 	private final Instance<AndroidClassPane> androidPaneProvider;
 	private final Instance<BinaryXmlFilePane> binaryXmlPaneProvider;
@@ -152,6 +156,7 @@ public class Actions implements Service {
 
 	@Inject
 	public Actions(@Nonnull ActionsConfig config,
+	               @Nonnull WorkspaceManager workspaceManager,
 	               @Nonnull NavigationManager navigationManager,
 	               @Nonnull DockingManager dockingManager,
 	               @Nonnull WindowFactory windowFactory,
@@ -160,7 +165,7 @@ public class Actions implements Service {
 	               @Nonnull CellConfigurationService cellConfigurationService,
 	               @Nonnull PathExportingManager pathExportingManager,
 	               @Nonnull MappingApplierService mappingApplierService,
-	               @Nonnull Instance<InheritanceGraph> inheritanceGraphProvider,
+	               @Nonnull InheritanceGraphService inheritanceGraphService,
 	               @Nonnull Instance<MappingApplier> applierProvider,
 	               @Nonnull Instance<JvmClassPane> jvmPaneProvider,
 	               @Nonnull Instance<AndroidClassPane> androidPaneProvider,
@@ -178,6 +183,7 @@ public class Actions implements Service {
 	               @Nonnull Instance<ClassReferenceSearchPane> classReferenceSearchPaneProvider,
 	               @Nonnull Instance<MemberReferenceSearchPane> memberReferenceSearchPaneProvider) {
 		this.config = config;
+		this.workspaceManager = workspaceManager;
 		this.navigationManager = navigationManager;
 		this.dockingManager = dockingManager;
 		this.windowFactory = windowFactory;
@@ -186,7 +192,7 @@ public class Actions implements Service {
 		this.cellConfigurationService = cellConfigurationService;
 		this.pathExportingManager = pathExportingManager;
 		this.mappingApplierService = mappingApplierService;
-		this.inheritanceGraphProvider = inheritanceGraphProvider;
+		this.inheritanceGraphService = inheritanceGraphService;
 		this.jvmPaneProvider = jvmPaneProvider;
 		this.androidPaneProvider = androidPaneProvider;
 		this.binaryXmlPaneProvider = binaryXmlPaneProvider;
@@ -1442,15 +1448,18 @@ public class Actions implements Service {
 	                       @Nonnull ClassMember member) {
 		String originalName = member.getName();
 		Consumer<String> copyTask = newName -> {
-			ClassWriter cw = new ClassWriter(0);
-			MemberCopyingVisitor cp = new MemberCopyingVisitor(cw, member, newName);
-			declaringClass.getClassReader().accept(cp, 0);
-			bundle.put(new JvmClassInfoBuilder(cw.toByteArray()).build());
+			ClassReader reader = declaringClass.getClassReader();
+			ClassWriter writer = new ClassWriter(reader, 0);
+			MemberCopyingVisitor copier = new MemberCopyingVisitor(writer, member, newName);
+			reader.accept(copier, 0);
+			bundle.put(new JvmClassInfoBuilder(writer.toByteArray()).build());
 		};
-		new NamePopup(copyTask)
-				.withInitialName(originalName)
-				.forFieldCopy(declaringClass, member)
-				.show();
+		NamePopup popup = new NamePopup(copyTask).withInitialName(originalName);
+		if (member.isField())
+			popup.forFieldCopy(declaringClass, member);
+		else if (member.isMethod())
+			popup.forMethodCopy(declaringClass, member);
+		popup.show();
 	}
 
 	/**
@@ -1724,6 +1733,26 @@ public class Actions implements Service {
 	}
 
 	/**
+	 * Exports all classes in a bundle, prompting the user to select a location to save the file to.
+	 *
+	 * @param workspace
+	 * 		Containing workspace.
+	 * @param resource
+	 * 		Containing resource.
+	 * @param bundle
+	 * 		Bundle with contents to export.
+	 */
+	public void exportClasses(@Nonnull Workspace workspace,
+	                          @Nonnull WorkspaceResource resource,
+	                          @Nonnull JvmClassBundle bundle) {
+		BasicJvmClassBundle bundleCopy = new BasicJvmClassBundle();
+		bundle.valuesAsCopy().forEach(bundleCopy::initialPut);
+		WorkspaceResource resourceCopy = new WorkspaceResourceBuilder().withJvmClassBundle(bundleCopy).build();
+		Workspace workspaceCopy = new BasicWorkspace(resourceCopy);
+		pathExportingManager.export(workspaceCopy, "bundle", false);
+	}
+
+	/**
 	 * Exports a directory, prompting the user to select a location to save the file to.
 	 *
 	 * @param workspace
@@ -1749,6 +1778,26 @@ public class Actions implements Service {
 		WorkspaceResource resourceCopy = new WorkspaceResourceBuilder().withFileBundle(bundleCopy).build();
 		Workspace workspaceCopy = new BasicWorkspace(resourceCopy);
 		pathExportingManager.export(workspaceCopy, "directory", false);
+	}
+
+	/**
+	 * Exports all files in a bundle, prompting the user to select a location to save the file to.
+	 *
+	 * @param workspace
+	 * 		Containing workspace.
+	 * @param resource
+	 * 		Containing resource.
+	 * @param bundle
+	 * 		Bundle with contents to export.
+	 */
+	public void exportFiles(@Nonnull Workspace workspace,
+	                        @Nonnull WorkspaceResource resource,
+	                        @Nonnull FileBundle bundle) {
+		BasicFileBundle bundleCopy = new BasicFileBundle();
+		bundle.valuesAsCopy().forEach(bundleCopy::initialPut);
+		WorkspaceResource resourceCopy = new WorkspaceResourceBuilder().withFileBundle(bundleCopy).build();
+		Workspace workspaceCopy = new BasicWorkspace(resourceCopy);
+		pathExportingManager.export(workspaceCopy, "bundle", false);
 	}
 
 	/**
@@ -1908,9 +1957,10 @@ public class Actions implements Service {
 	                              @Nonnull JvmClassBundle bundle,
 	                              @Nonnull JvmClassInfo declaringClass,
 	                              @Nonnull Collection<FieldMember> fields) {
-		ClassWriter writer = new ClassWriter(0);
+		ClassReader reader = declaringClass.getClassReader();
+		ClassWriter writer = new ClassWriter(reader, 0);
 		MemberRemovingVisitor visitor = new MemberRemovingVisitor(writer, FieldPredicate.of(fields));
-		declaringClass.getClassReader().accept(visitor, 0);
+		reader.accept(visitor, 0);
 		bundle.put(declaringClass.toJvmClassBuilder()
 				.adaptFrom(writer.toByteArray())
 				.build());
@@ -1959,9 +2009,10 @@ public class Actions implements Service {
 	                               @Nonnull JvmClassBundle bundle,
 	                               @Nonnull JvmClassInfo declaringClass,
 	                               @Nonnull Collection<MethodMember> methods) {
-		ClassWriter writer = new ClassWriter(0);
+		ClassReader reader = declaringClass.getClassReader();
+		ClassWriter writer = new ClassWriter(reader, 0);
 		MemberRemovingVisitor visitor = new MemberRemovingVisitor(writer, MethodPredicate.of(methods));
-		declaringClass.getClassReader().accept(visitor, 0);
+		reader.accept(visitor, 0);
 		bundle.put(declaringClass.toJvmClassBuilder()
 				.adaptFrom(writer.toByteArray())
 				.build());
@@ -2047,8 +2098,9 @@ public class Actions implements Service {
 	                          @Nonnull JvmClassBundle bundle,
 	                          @Nonnull JvmClassInfo info) {
 		new AddMemberPopup(member -> {
-			ClassWriter writer = new ClassWriter(0);
-			info.getClassReader().accept(new MemberStubAddingVisitor(writer, member), 0);
+			ClassReader reader = info.getClassReader();
+			ClassWriter writer = new ClassWriter(reader, 0);
+			reader.accept(new MemberStubAddingVisitor(writer, member), 0);
 			JvmClassInfo updatedInfo = info.toJvmClassBuilder()
 					.adaptFrom(writer.toByteArray())
 					.build();
@@ -2080,8 +2132,9 @@ public class Actions implements Service {
 	                           @Nonnull JvmClassBundle bundle,
 	                           @Nonnull JvmClassInfo info) {
 		new AddMemberPopup(member -> {
-			ClassWriter writer = new ClassWriter(0);
-			info.getClassReader().accept(new MemberStubAddingVisitor(writer, member), 0);
+			ClassReader reader = info.getClassReader();
+			ClassWriter writer = new ClassWriter(reader, 0);
+			reader.accept(new MemberStubAddingVisitor(writer, member), 0);
 			JvmClassInfo updatedInfo = info.toJvmClassBuilder()
 					.adaptFrom(writer.toByteArray())
 					.build();
@@ -2112,12 +2165,11 @@ public class Actions implements Service {
 	                                @Nonnull WorkspaceResource resource,
 	                                @Nonnull JvmClassBundle bundle,
 	                                @Nonnull JvmClassInfo info) {
-		InheritanceGraph inheritanceGraph = inheritanceGraphProvider.get();
-		if (inheritanceGraph == null)
-			return;
+		InheritanceGraph inheritanceGraph = inheritanceGraphService.getOrCreateInheritanceGraph(workspace);
 		new OverrideMethodPopup(this, cellConfigurationService, inheritanceGraph, workspace, info, (methodOwner, method) -> {
-			ClassWriter writer = new ClassWriter(0);
-			info.getClassReader().accept(new MemberStubAddingVisitor(writer, method), 0);
+			ClassReader reader = info.getClassReader();
+			ClassWriter writer = new ClassWriter(reader, 0);
+			reader.accept(new MemberStubAddingVisitor(writer, method), 0);
 			JvmClassInfo updatedInfo = info.toJvmClassBuilder()
 					.adaptFrom(writer.toByteArray())
 					.build();
@@ -2151,9 +2203,10 @@ public class Actions implements Service {
 	                            @Nonnull JvmClassBundle bundle,
 	                            @Nonnull JvmClassInfo declaringClass,
 	                            @Nonnull Collection<MethodMember> methods) {
-		ClassWriter writer = new ClassWriter(0);
+		ClassReader reader = declaringClass.getClassReader();
+		ClassWriter writer = new ClassWriter(reader, 0);
 		MethodNoopingVisitor visitor = new MethodNoopingVisitor(writer, MethodPredicate.of(methods));
-		declaringClass.getClassReader().accept(visitor, 0);
+		reader.accept(visitor, 0);
 		bundle.put(declaringClass.toJvmClassBuilder()
 				.adaptFrom(writer.toByteArray())
 				.build());
@@ -2186,18 +2239,20 @@ public class Actions implements Service {
 	                                       @Nonnull Collection<String> annotationTypes) {
 		try {
 			if (annotated instanceof JvmClassInfo target) {
-				ClassWriter writer = new ClassWriter(0);
-				target.getClassReader().accept(new ClassAnnotationRemovingVisitor(writer, annotationTypes), 0);
+				ClassReader reader = target.getClassReader();
+				ClassWriter writer = new ClassWriter(reader, 0);
+				reader.accept(new ClassAnnotationRemovingVisitor(writer, annotationTypes), 0);
 				JvmClassInfo updatedClass = new JvmClassInfoBuilder(writer.toByteArray()).build();
 				bundle.put(cast(updatedClass));
 			} else if (annotated instanceof ClassMember member && member.getDeclaringClass() instanceof JvmClassInfo target) {
-				ClassWriter writer = new ClassWriter(0);
+				ClassReader reader = target.getClassReader();
+				ClassWriter writer = new ClassWriter(reader, 0);
 				if (member.isField()) {
 					FieldMember field = (FieldMember) member;
-					target.getClassReader().accept(FieldAnnotationRemovingVisitor.forClass(writer, annotationTypes, field), 0);
+					reader.accept(FieldAnnotationRemovingVisitor.forClass(writer, annotationTypes, field), 0);
 				} else {
 					MethodMember method = (MethodMember) member;
-					target.getClassReader().accept(MethodAnnotationRemovingVisitor.forClass(writer, annotationTypes, method), 0);
+					reader.accept(MethodAnnotationRemovingVisitor.forClass(writer, annotationTypes, method), 0);
 				}
 				JvmClassInfo updatedClass = new JvmClassInfoBuilder(writer.toByteArray()).build();
 				bundle.put(cast(updatedClass));

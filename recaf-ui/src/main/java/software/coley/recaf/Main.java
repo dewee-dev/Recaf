@@ -11,18 +11,21 @@ import software.coley.recaf.cdi.InitializationStage;
 import software.coley.recaf.launch.LaunchArguments;
 import software.coley.recaf.launch.LaunchCommand;
 import software.coley.recaf.launch.LaunchHandler;
+import software.coley.recaf.services.compile.CompilerDiagnostic;
 import software.coley.recaf.services.file.RecafDirectoriesConfig;
 import software.coley.recaf.services.plugin.PluginContainer;
 import software.coley.recaf.services.plugin.PluginException;
 import software.coley.recaf.services.plugin.PluginManager;
 import software.coley.recaf.services.plugin.discovery.DirectoryPluginDiscoverer;
 import software.coley.recaf.services.script.ScriptEngine;
+import software.coley.recaf.services.script.ScriptResult;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.services.workspace.io.ResourceImporter;
 import software.coley.recaf.ui.config.WindowScaleConfig;
 import software.coley.recaf.util.JFXValidation;
 import software.coley.recaf.util.JdkValidation;
 import software.coley.recaf.util.Lang;
+import software.coley.recaf.util.threading.ThreadUtil;
 import software.coley.recaf.workspace.model.BasicWorkspace;
 
 import java.io.File;
@@ -34,6 +37,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -90,13 +94,14 @@ public class Main {
 		launchArgs.setCommand(launchArgValues);
 		launchArgs.setRawArgs(args);
 
-		// Setup the launch-handler bean to load inputs if specified by the launch arguments.
-		// It will be executed
-		LaunchHandler.task = Main::initHandleInputs;
+		// Set up the launch-handler bean to load inputs if specified by the launch arguments.
 		Bean<?> bean = recaf.getContainer().getBeanContainer().getBeans(LaunchHandler.class).iterator().next();
 		if (launchArgValues.isHeadless()) {
+			LaunchHandler.task = Main::initHandleInputs;
 			EagerInitializationExtension.getApplicationScopedEagerBeans().add(bean);
 		} else {
+			// Run input handling in the background so that it does not block the UI
+			LaunchHandler.task = () -> CompletableFuture.runAsync(Main::initHandleInputs, ThreadUtil.executor());
 			EagerInitializationExtension.getApplicationScopedEagerBeansForUi().add(bean);
 		}
 
@@ -246,9 +251,22 @@ public class Main {
 			File script = launchArgs.getScript();
 			if (script != null && !script.isFile())
 				script = launchArgs.getScriptInScriptsDirectory();
-			if (script != null && script.isFile())
-				recaf.get(ScriptEngine.class)
-						.run(Files.readString(script.toPath()));
+			if (script != null && script.isFile()) {
+				ScriptResult result = recaf.get(ScriptEngine.class)
+						.run(Files.readString(script.toPath()))
+						.get();
+				if (!result.wasSuccess()) {
+					if (result.wasRuntimeError()) {
+						// The script engine will have already logged the exceptions
+						logger.error("Error encountered when executing script '{}'", script.getName());
+					} else if (result.wasCompileFailure()) {
+						// Inform the user where the script is incorrectly formatted
+						logger.error("Error compiling script:\n{}", result.getCompileDiagnostics().stream()
+								.map(CompilerDiagnostic::toString)
+								.collect(Collectors.joining("\n")));
+					}
+				}
+			}
 		} catch (Throwable t) {
 			logger.error("Error handling execution of launch script.", t);
 		}

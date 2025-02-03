@@ -1,6 +1,7 @@
 package software.coley.recaf.services.deobfuscation;
 
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import me.darknet.assembler.compile.JavaClassRepresentation;
 import me.darknet.assembler.compile.visitor.JavaCompileResult;
 import me.darknet.assembler.error.Error;
@@ -13,18 +14,31 @@ import org.junit.jupiter.api.Test;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.StubClassInfo;
 import software.coley.recaf.info.builder.JvmClassInfoBuilder;
+import software.coley.recaf.info.member.MethodMember;
+import software.coley.recaf.path.ClassMemberPathNode;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.PathNodes;
+import software.coley.recaf.services.assembler.AssemblerPipelineManager;
 import software.coley.recaf.services.assembler.JvmAssemblerPipeline;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.services.decompile.cfr.CfrConfig;
 import software.coley.recaf.services.decompile.cfr.CfrDecompiler;
-import software.coley.recaf.services.deobfuscation.builtin.StaticValueInliningTransformer;
-import software.coley.recaf.services.transform.TransformResult;
+import software.coley.recaf.services.deobfuscation.transform.generic.DuplicateCatchMergingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.GotoInliningTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.IllegalSignatureRemovingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.IllegalVarargsRemovingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.LinearOpaqueConstantFoldingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.OpaquePredicateFoldingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.RedundantTryCatchRemovingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueCollectionTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueInliningTransformer;
+import software.coley.recaf.services.transform.JvmClassTransformer;
+import software.coley.recaf.services.transform.JvmTransformResult;
 import software.coley.recaf.services.transform.TransformationApplier;
 import software.coley.recaf.services.transform.TransformationApplierService;
 import software.coley.recaf.test.TestBase;
+import software.coley.recaf.util.StringUtil;
 import software.coley.recaf.workspace.model.BasicWorkspace;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
@@ -32,6 +46,7 @@ import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 import software.coley.recaf.workspace.model.resource.WorkspaceResourceBuilder;
 
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -58,10 +73,14 @@ class DeobfuscationTransformTest extends TestBase {
 	void setupWorkspace() {
 		workspace = new BasicWorkspace(new WorkspaceResourceBuilder().build());
 		workspaceManager.setCurrentIgnoringConditions(workspace);
-		assembler = recaf.get(JvmAssemblerPipeline.class);
+		assembler = recaf.get(AssemblerPipelineManager.class).newJvmAssemblerPipeline(workspace);
 		transformationApplier = transformationApplierService.newApplierForCurrentWorkspace();
 	}
 
+	/**
+	 * @see StaticValueInliningTransformer
+	 * @see StaticValueCollectionTransformer
+	 */
 	@Nested
 	class StaticValueInlining {
 		@Test
@@ -90,7 +109,7 @@ class DeobfuscationTransformTest extends TestBase {
 					    }
 					}
 					""";
-			validateBeforeAfter(asm, "println(foo);", "println(5);");
+			validateInlining(asm, "println(foo);", "println(5);");
 
 			// With strings
 			asm = """
@@ -117,7 +136,7 @@ class DeobfuscationTransformTest extends TestBase {
 					    }
 					}
 					""";
-			validateBeforeAfter(asm, "println(foo);", "println(\"Hello\");");
+			validateInlining(asm, "println(foo);", "println(\"Hello\");");
 		}
 
 		@Test
@@ -156,7 +175,7 @@ class DeobfuscationTransformTest extends TestBase {
 					    }
 					}
 					""";
-			validateNoTransformation(asm);
+			validateNoInlining(asm);
 		}
 
 		@Test
@@ -185,7 +204,7 @@ class DeobfuscationTransformTest extends TestBase {
 					    }
 					}
 					""";
-			validateBeforeAfter(asm, "println(foo);", "println(5);");
+			validateInlining(asm, "println(foo);", "println(5);");
 		}
 
 		@Test
@@ -204,7 +223,7 @@ class DeobfuscationTransformTest extends TestBase {
 					    }
 					}
 					""";
-			validateBeforeAfter(asm, "println(foo);", "println(5);");
+			validateInlining(asm, "println(foo);", "println(5);");
 		}
 
 		@Test
@@ -239,7 +258,7 @@ class DeobfuscationTransformTest extends TestBase {
 					    }
 					}
 					""";
-			validateBeforeAfter(asm, "println(foo);", "println(25);");
+			validateInlining(asm, "println(foo);", "println(25);");
 		}
 
 		@Test
@@ -274,20 +293,679 @@ class DeobfuscationTransformTest extends TestBase {
 					    }
 					}
 					""";
-			validateBeforeAfter(asm, "println(foo);", "println(\"Hello\");");
+			validateInlining(asm, "println(foo);", "println(\"Hello\");");
+		}
+
+		private void validateNoInlining(@Nonnull String assembly) {
+			validateNoTransformation(assembly, List.of(StaticValueInliningTransformer.class));
+		}
+
+
+		private void validateInlining(@Nonnull String assembly, @Nonnull String expectedBefore, @Nullable String expectedAfter) {
+			validateBeforeAfterDecompile(assembly, List.of(StaticValueInliningTransformer.class), expectedBefore, expectedAfter);
 		}
 	}
 
-	private void validateNoTransformation(@Nonnull String assembly) {
+	/**
+	 * For transformers that generally remove/cleanup content.
+	 */
+	@Nested
+	class Removals {
+		@Test
+		void illegalSignatureRemoving() {
+			// An int primitive is an invalid argument for a field signature (Valhalla when Brian?).
+			// Most other invalid signatures aren't visible via decompilation so this suffices to show the transformer works.
+			// Most of it delegates to code that is tested elsewhere.
+			String asm = """
+					.signature "Ljava/util/List<I>;"
+					.field private static foo Ljava/lang/List;
+					""";
+			validateBeforeAfterDecompile(asm, List.of(IllegalSignatureRemovingTransformer.class), "List<int> foo", "List foo");
+		}
+
+		@Test
+		void illegalVarargsRemoving() {
+			// CFR actually checks for illegal varargs use and emits a nice warning for us.
+			// So we'll just check if that goes away.
+			String asm = """
+					.method public static varargs example ([I[II)V {
+					    code: {
+					    A:
+					        return
+					    B:
+					    }
+					}
+					""";
+			validateBeforeAfterDecompile(asm, List.of(IllegalVarargsRemovingTransformer.class), "/* corrupt varargs signature?! */", null);
+		}
+
+		@Test
+		void duplicateCatchHandlers() {
+			String asm = """
+					.method public static example ()V {
+						exceptions: {
+					       {  A,  B,  C, Ljava/lang/Throwable0; },
+					       {  A,  B,  D, Ljava/lang/Throwable1; },
+					       {  A,  B,  E, Ljava/lang/Throwable2; },
+					       {  A,  B,  F, Ljava/lang/Throwable3; }
+					    },
+					    code: {
+					    A:
+					        invokestatic Example.throwing ()V
+					    B:
+					        goto END
+					    C:
+					        invokevirtual java/lang/Throwable.printStackTrace ()V
+					        invokestatic  com/example/MyApp.logFailure ()V
+					        goto END
+					    D:
+					        invokevirtual java/lang/Throwable.printStackTrace ()V
+					        invokestatic  com/example/MyApp.logFailure ()V
+					        goto END
+					    E:
+					        invokevirtual java/lang/Throwable.printStackTrace ()V
+					        invokestatic  com/example/MyApp.logFailure ()V
+					        goto END
+					    F:
+					        invokevirtual java/lang/Throwable.printStackTrace ()V
+					        invokestatic  com/example/MyApp.logFailure ()V
+					        goto END
+					    END:
+					        return
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(DuplicateCatchMergingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("printStackTrace", dis), "Catch block contents were not merged");
+				assertEquals(5, StringUtil.count("goto", dis), "Expected 5 goto instructions after merging");
+			});
+		}
+
+		@Test
+		void redundantTryCatch() {
+			String asm = """
+					.method public static example ()V {
+						exceptions: {
+					       {  A,  B,  C, Ljava/lang/Throwable; }
+					    },
+					    code: {
+					    A:
+					        aconst_null
+					        pop
+					    B:
+					        goto END
+					    C:
+					        astore ex
+					        aload ex
+					        invokevirtual java/lang/Throwable.printStackTrace ()V
+					        goto END
+					    END:
+					        return
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(RedundantTryCatchRemovingTransformer.class), dis -> {
+				assertEquals(0, StringUtil.count("exceptions:", dis), "Should have removed exception ranges");
+				assertEquals(0, StringUtil.count("printStackTrace", dis), "Should have removed catch block contents");
+				assertEquals(0, StringUtil.count("astore", dis), "Should have removed catch block contents");
+			});
+		}
+
+		/** Ensures {@link RedundantTryCatchRemovingTransformer} is not too aggressive. */
+		@Test
+		void oneRedundantOneRelevantTryCatch() {
+			String asm = """
+					.method public static example ()V {
+						exceptions: {
+					       {  A,  B,  C, Ljava/lang/ClassNotFoundException; },
+					       {  A,  B,  C, Ljava/lang/ArithmeticException; }
+					    },
+					    code: {
+					    A:
+					        iconst_0
+					        iconst_0
+					        idiv
+					        pop
+					    B:
+					        goto END
+					    C:
+					        astore ex
+					        aload ex
+					        invokevirtual java/lang/Throwable.printStackTrace ()V
+					        goto END
+					    END:
+					        return
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(RedundantTryCatchRemovingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("Ljava/lang/ArithmeticException;", dis), "Should not have removed ArithmeticException");
+				assertEquals(0, StringUtil.count("Ljava/lang/ClassNotFoundException;", dis), "Should have removed ClassNotFoundException");
+			});
+		}
+
+		/** Ensures {@link RedundantTryCatchRemovingTransformer} is not too aggressive. */
+		@Test
+		void keepPotentialThrowingMethodTryCatch() {
+			String asm = """
+					.method public static example ()V {
+						exceptions: {
+					       {  A,  B,  C, Ljava/lang/Throwable; }
+					    },
+					    code: {
+					    A:
+					        invokestatic Example.throwing ()V
+					    B:
+					        goto END
+					    C:
+					        invokevirtual java/lang/Throwable.printStackTrace ()V
+					        goto END
+					    END:
+					        return
+					    }
+					}
+					""";
+			validateNoTransformation(asm, List.of(RedundantTryCatchRemovingTransformer.class));
+		}
+	}
+
+	@Nested
+	class Folding {
+		@Test
+		void foldIntegerMath() {
+			String asm = """
+					.method public static example ()I {
+					    code: {
+					    A:
+					        iconst_1
+					        iconst_1
+					        iadd
+					        // 1 + 1  --> 2
+					        ineg
+					        // 2      --> -2
+					        iconst_2
+					        imul
+					        // -2 x 2 --> -4
+					        iconst_4
+					        idiv
+					        // -4 / 4 --> -1
+					        iconst_m1
+					        isub
+					        // -1 --1 --> 0
+					        ireturn
+					    B:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(LinearOpaqueConstantFoldingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("iconst_0", dis), "Expected to fold to 0");
+			});
+		}
+
+		@Test
+		void foldFloatMath() {
+			String asm = """
+					.method public static example ()F {
+					    code: {
+					    A:
+					        fconst_1
+					        fconst_1
+					        fadd
+					        // 1 + 1  --> 2
+					        fneg
+					        // 2      --> -2
+					        fconst_2
+					        fmul
+					        // -2 x 2 --> -4
+					        ldc 4F
+					        fdiv
+					        // -4 / 4 --> -1
+					        ldc -1F
+					        fsub
+					        // -1 --1 --> 0
+					        freturn
+					    B:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(LinearOpaqueConstantFoldingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("fconst_0", dis), "Expected to fold to 0F");
+			});
+		}
+
+		@Test
+		void foldDoubleMath() {
+			String asm = """
+					.method public static example ()D {
+					    code: {
+					    A:
+					        dconst_1
+					        dconst_1
+					        dadd
+					        // 1 + 1  --> 2
+					        dneg
+					        // 2      --> -2
+					        ldc 2.0
+					        dmul
+					        // -2 x 2 --> -4
+					        ldc 4.0
+					        ddiv
+					        // -4 / 4 --> -1
+					        ldc -1.0
+					        dsub
+					        // -1 --1 --> 0
+					        dreturn
+					    B:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(LinearOpaqueConstantFoldingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("dconst_0", dis), "Expected to fold to 0.0");
+			});
+		}
+
+		@Test
+		void foldLongMath() {
+			String asm = """
+					.method public static example ()J {
+					    code: {
+					    A:
+					        lconst_1
+					        lconst_1
+					        ladd
+					        // 1 + 1  --> 2
+					        lneg
+					        // 2      --> -2
+					        ldc 2L
+					        lmul
+					        // -2 x 2 --> -4
+					        ldc 4L
+					        ldiv
+					        // -4 / 4 --> -1
+					        ldc -1L
+					        lsub
+					        // -1 --1 --> 0
+					        lreturn
+					    B:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(LinearOpaqueConstantFoldingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("lconst_0", dis), "Expected to fold to 0L");
+			});
+		}
+
+		@Test
+		void foldConversions() {
+			String asm = """
+					.method public static example ()I {
+					    code: {
+					    A:
+					        ldc 5.125
+					        d2l
+					        l2f
+					        f2i
+					        ireturn
+					    B:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(LinearOpaqueConstantFoldingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("iconst_5", dis), "Expected to fold to 5");
+			});
+		}
+
+		@Test
+		void foldLongComparison() {
+			String asm = """
+					.method public static example ()I {
+					    code: {
+					    A:
+					        ldc 123L
+					        ldc 321L
+					        lcmp
+					        ireturn
+					    B:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(LinearOpaqueConstantFoldingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("iconst_m1", dis), "Expected to fold to -1");
+			});
+		}
+
+		@Test
+		void foldFloatComparison() {
+			String asm = """
+					.method public static example ()I {
+					    code: {
+					    A:
+					        ldc 123.0F
+					        ldc 321.0F
+					        fcmpl
+					        ireturn
+					    B:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(LinearOpaqueConstantFoldingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("iconst_m1", dis), "Expected to fold to -1");
+			});
+		}
+
+		@Test
+		void foldDoubleComparison() {
+			String asm = """
+					.method public static example ()I {
+					    code: {
+					    A:
+					        ldc 123.0
+					        ldc 321.0
+					        dcmpl
+					        ireturn
+					    B:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(LinearOpaqueConstantFoldingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("iconst_m1", dis), "Expected to fold to -1");
+			});
+		}
+
+		@Test
+		@Disabled("Requires an impl for the ReInterpreter lookups")
+		void foldMethodCalls() {
+			String asm = """
+					.method public static example ()I {
+					    code: {
+					    A:
+					        iconst_1
+					        iconst_5
+					        invokestatic java/lang/Math.min (II)I
+					        ireturn
+					    B:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(LinearOpaqueConstantFoldingTransformer.class), dis -> {
+				assertEquals(1, StringUtil.count("iconst_1", dis), "Expected to fold to 1");
+				assertEquals(0, StringUtil.count("iconst_5", dis), "Expected to prune argument");
+				assertEquals(0, StringUtil.count("Math.min", dis), "Expected to prune method call");
+			});
+		}
+
+		@Test
+		void foldOpaqueIfeq() {
+			String asm = """
+					.method public static example ()V {
+					    code: {
+					    A:
+					        iconst_0
+					        ifeq C
+					    B:
+					        // Should be skipped over by transformer
+					        aconst_null
+					        athrow
+					    C:
+					        return
+					    D:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(OpaquePredicateFoldingTransformer.class), dis -> {
+				assertEquals(0, StringUtil.count("ifeq", dis), "Expected to remove ifeq");
+				assertEquals(1, StringUtil.count("goto", dis), "Expected to replace ifeq <target> with goto <target>");
+			});
+		}
+
+		@Test
+		void foldOpaqueIfIcmplt() {
+			String asm = """
+					.method public static example ()V {
+					    code: {
+					    A:
+					        iconst_0
+					        iconst_3
+					        if_icmplt C
+					    B:
+					        // Should be skipped over by transformer
+					        aconst_null
+					        athrow
+					    C:
+					        return
+					    D:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(OpaquePredicateFoldingTransformer.class), dis -> {
+				assertEquals(0, StringUtil.count("if_icmplt", dis), "Expected to remove if_icmplt");
+				assertEquals(1, StringUtil.count("goto", dis), "Expected to replace if_icmplt <target> with goto <target>");
+			});
+		}
+
+		@Test
+		void foldOpaqueTableSwitch() {
+			String asm = """
+					.method public static example ()V {
+					    code: {
+					    A:
+					        iconst_2
+					        tableswitch {
+					            min: 0,
+					            max: 2,
+					            cases: { B, C, D },
+					            default: E
+					        }
+					    B:
+					        aconst_null
+					        athrow
+					    C:
+					        aconst_null
+					        athrow
+					    D:
+					        return
+					    E:
+					        aconst_null
+					        athrow
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(OpaquePredicateFoldingTransformer.class), dis -> {
+				// Switch should be replaced with a single goto
+				assertEquals(0, StringUtil.count("tableswitch", dis), "Expected to remove tableswitch");
+				assertEquals(1, StringUtil.count("goto B", dis), "Expected to replace tableswitch <target> with goto <target>");
+
+				// Dead code should be removed
+				assertEquals(0, StringUtil.count("aconst_null", dis), "Expected to remove dead aconst_null");
+				assertEquals(0, StringUtil.count("athrow", dis), "Expected to remove dead athrow");
+			});
+		}
+
+		@Test
+		void foldUselessGoto() {
+			String asm = """
+					.method public static example ()V {
+					    code: {
+					    A:
+					        goto D
+					    B:
+					        goto C
+					    C:
+					        goto G
+					    D:
+					        goto H
+					    E:
+					        goto L
+					    F:
+					        goto N
+					    G:
+					        goto E
+					    H:
+					        goto M
+					    I:
+					        goto J
+					    J:
+					        getstatic java/lang/System.out Ljava/io/PrintStream;
+					        ldc "Hello world"
+					        invokevirtual java/io/PrintStream.println (Ljava/lang/String;)V
+					        return
+					    K:
+					        goto I
+					    L:
+					        goto K
+					    M:
+					        goto F
+					    N:
+					        goto B
+					    O:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(GotoInliningTransformer.class), dis -> {
+				assertEquals(0, StringUtil.count("goto", dis), "Expected to replace all goto <target> with inlining");
+			});
+		}
+
+		/** Showcase pairing of {@link OpaquePredicateFoldingTransformer} with {@link GotoInliningTransformer} */
+		@Test
+		void foldOpaquePredicatesIntoGotosThenInlineTheGotos() {
+			String asm = """
+					.method public static example ()V {
+					    code: {
+					    A:
+					        iconst_0
+					        ifeq D
+					        goto E
+					    B:
+					        iconst_1
+					        ifne C
+					        goto E
+					    C:
+					        iconst_0
+					        ifne E
+					        goto G
+					    D:
+					        iconst_0
+					        ifeq H
+					        goto N
+					    E:
+					        iconst_2
+					        ifeq N
+					        goto L
+					    F:
+					        iconst_2
+					        ifne N
+					        iconst_0
+					        ifeq A
+					        goto L
+					    G:
+					        iconst_0
+					        ifeq E
+					        goto N
+					    H:
+					        iconst_1
+					        ifeq L
+					        goto M
+					    I:
+					        iconst_4
+					        ifeq A
+					    J:
+					        getstatic java/lang/System.out Ljava/io/PrintStream;
+					        ldc "Hello world"
+					        invokevirtual java/io/PrintStream.println (Ljava/lang/String;)V
+					        return
+					    K:
+					        iconst_5
+					        ifne I
+					        goto L
+					    L:
+					        iconst_0
+					        ifne J
+					        goto K
+					    M:
+					        iconst_2
+					        ifne F
+					        goto N
+					    N:
+					        goto B
+					    O:
+					    }
+					}
+					""";
+			validateAfterAssembly(asm, List.of(OpaquePredicateFoldingTransformer.class, GotoInliningTransformer.class), dis -> {
+				assertEquals(0, StringUtil.count("goto", dis), "Expected to replace all goto <target> with inlining");
+			});
+		}
+
+		@Test
+		void doNotFoldGotoInsideTryRangeWithCodeOutsideOfTryRange() {
+			// Because this would technically be a behavior change (unless we do lots of more analysis)
+			// we do not inline goto instructions that span the boundaries of try-catch.
+			//
+			// You would first need to apply a transformer to remove the try-catch if it is not actually useful.
+			String asm = """
+					.method public static example ()V {
+						exceptions: {
+					       {  E0,  E1,  EH, Ljava/lang/Throwable; }
+					    },
+					    code: {
+					    E0:
+					        goto X
+					    E1:
+					    EH:
+					        athrow
+					    X:
+					        getstatic java/lang/System.out Ljava/io/PrintStream;
+					        ldc "Hello world"
+					        invokevirtual java/io/PrintStream.println (Ljava/lang/String;)V
+					        return
+					    Z:
+					    }
+					}
+					""";
+			validateNoTransformation(asm, List.of(GotoInliningTransformer.class));
+		}
+
+		@Test
+		void doNotFoldGotoOutsideTryRangeWithCodeInsideOfTryRange() {
+			// Because this would technically be a behavior change (unless we do lots of more analysis)
+			// we do not inline goto instructions that span the boundaries of try-catch.
+			//
+			// You would first need to apply a transformer to remove the try-catch if it is not actually useful.
+			String asm = """
+					.method public static example ()V {
+						exceptions: {
+					       {  E0,  E1,  EH, Ljava/lang/Throwable; }
+					    },
+					    code: {
+					    A:
+					        goto E0
+					    E0:
+					        getstatic java/lang/System.out Ljava/io/PrintStream;
+					        ldc "Hello world"
+					        invokevirtual java/io/PrintStream.println (Ljava/lang/String;)V
+					        return
+					    E1:
+					    EH:
+					        athrow
+					    }
+					}
+					""";
+			validateNoTransformation(asm, List.of(GotoInliningTransformer.class));
+		}
+	}
+
+	private void validateNoTransformation(@Nonnull String assembly, @Nonnull List<Class<? extends JvmClassTransformer>> transformers) {
 		JvmClassInfo cls = assemble(assembly);
 
 		// Transforming should not actually result in any changes
-		TransformResult result = assertDoesNotThrow(() -> transformationApplier.transformJvm( List.of(StaticValueInliningTransformer.class)));
-		assertTrue(result.getJvmTransformerFailures().isEmpty(), "There were transformation failures");
-		assertEquals(0, result.getJvmTransformedClasses().size(), "There were unexpected transformations applied");
+		JvmTransformResult result = assertDoesNotThrow(() -> transformationApplier.transformJvm(transformers));
+		assertTrue(result.getTransformerFailures().isEmpty(), "There were transformation failures");
+		assertEquals(0, result.getTransformerFailures().size(), "There were unexpected transformations applied");
 	}
 
-	private void validateBeforeAfter(@Nonnull String assembly, @Nonnull String expectedBefore, @Nonnull String expectedAfter) {
+	private void validateBeforeAfterDecompile(@Nonnull String assembly, @Nonnull List<Class<? extends JvmClassTransformer>> transformers,
+	                                          @Nonnull String expectedBefore, @Nullable String expectedAfter) {
 		JvmClassInfo cls = assemble(assembly);
 
 		// Before transformation, check that the expected before-state is matched
@@ -296,18 +974,56 @@ class DeobfuscationTransformTest extends TestBase {
 		assertTrue(initialDecompile.contains(expectedBefore));
 
 		// Run the transformer
-		TransformResult result = assertDoesNotThrow(() -> transformationApplier.transformJvm( List.of(StaticValueInliningTransformer.class)));
-		assertTrue(result.getJvmTransformerFailures().isEmpty(), "There were transformation failures");
-		assertEquals(1, result.getJvmTransformedClasses().size(), "Expected transformation to be applied");
+		JvmTransformResult result = assertDoesNotThrow(() -> transformationApplier.transformJvm(transformers));
+		assertTrue(result.getTransformerFailures().isEmpty(), "There were transformation failures");
+		assertEquals(1, result.getTransformedClasses().size(), "Expected transformation to be applied");
 
 		// Validate output has been transformed to match the expected after-state.
 		String transformedDecompile = decompileTransformed(result);
 		if (PRINT_BEFORE_AFTER) System.out.println("========= AFTER ========\n" + transformedDecompile);
-		assertTrue(transformedDecompile.contains(expectedAfter));
+		if (expectedAfter == null)
+			// If the 'after' is null, we should just check if the 'before' no longer exists
+			assertFalse(transformedDecompile.contains(expectedBefore));
+		else
+			// Otherwise, check if the 'after' exists
+			assertTrue(transformedDecompile.contains(expectedAfter));
+	}
+
+	private void validateAfterAssembly(@Nonnull String assembly, @Nonnull List<Class<? extends JvmClassTransformer>> transformers,
+	                                   @Nonnull Consumer<String> assertionChecker) {
+		if (PRINT_BEFORE_AFTER) System.out.println("======== BEFORE ========\n" + assembly);
+
+		// Run the transformer
+		JvmClassInfo cls = assemble(assembly);
+		JvmTransformResult result = assertDoesNotThrow(() -> transformationApplier.transformJvm(transformers));
+		assertTrue(result.getTransformerFailures().isEmpty(), "There were transformation failures");
+		assertEquals(1, result.getTransformedClasses().size(), "Expected transformation to be applied");
+
+		// Validate output has been transformed to match the expected after-state.
+		String transformedDisassembly = disassembleTransformed(result);
+		if (PRINT_BEFORE_AFTER) System.out.println("========= AFTER ========\n" + transformedDisassembly);
+		assertionChecker.accept(transformedDisassembly);
 	}
 
 	@Nonnull
-	private String decompileTransformed(@Nonnull TransformResult result) {
+	private String disassembleTransformed(@Nonnull JvmTransformResult result) {
+		result.apply();
+		JvmClassBundle bundle = workspace.getPrimaryResource().getJvmClassBundle();
+		WorkspaceResource resource = workspace.getPrimaryResource();
+		JvmClassInfo cls = bundle.get(CLASS_NAME);
+		MethodMember method = cls.getFirstDeclaredMethodByName("example");
+		if (method == null)
+			fail("Failed to find 'example' method, cannot disassemble");
+		ClassMemberPathNode path = PathNodes.memberPath(workspace, resource, bundle, cls, method);
+		Result<String> disassembly = assembler.disassemble(path);
+		if (disassembly.isOk())
+			return disassembly.get();
+		fail(disassembly.errors().stream().map(Error::toString).collect(Collectors.joining("\n")));
+		return "<error>";
+	}
+
+	@Nonnull
+	private String decompileTransformed(@Nonnull JvmTransformResult result) {
 		result.apply();
 		JvmClassBundle bundle = workspace.getPrimaryResource().getJvmClassBundle();
 		JvmClassInfo cls = bundle.get(CLASS_NAME);

@@ -1,7 +1,7 @@
-package software.coley.recaf.services.deobfuscation.builtin;
+package software.coley.recaf.services.deobfuscation.transform.generic;
 
 import jakarta.annotation.Nonnull;
-import jakarta.enterprise.context.Dependent;
+import jakarta.enterprise.context.ApplicationScoped;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
@@ -10,6 +10,7 @@ import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.services.transform.ClassTransformer;
 import software.coley.recaf.services.transform.JvmClassTransformer;
 import software.coley.recaf.services.transform.JvmTransformerContext;
 import software.coley.recaf.services.transform.TransformationException;
@@ -33,17 +34,17 @@ import java.util.Set;
  *
  * @author Matt Coley
  */
-@Dependent
+@ApplicationScoped
 public class StaticValueInliningTransformer implements JvmClassTransformer {
 	@Override
 	@SuppressWarnings("OptionalGetWithoutIsPresent")
 	public void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
 	                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
-	                      @Nonnull JvmClassInfo classInfo) throws TransformationException {
+	                      @Nonnull JvmClassInfo initialClassState) throws TransformationException {
 		var staticValueCollector = context.getJvmTransformer(StaticValueCollectionTransformer.class);
 
 		boolean dirty = false;
-		ClassNode node = context.getNode(bundle, classInfo);
+		ClassNode node = context.getNode(bundle, initialClassState);
 		for (MethodNode method : node.methods) {
 			// Skip static initializer and abstract methods
 			if (method.name.contains("<clinit>") || method.instructions == null)
@@ -93,7 +94,7 @@ public class StaticValueInliningTransformer implements JvmClassTransformer {
 
 		// Record transformed class if we made any changes
 		if (dirty)
-			context.setNode(bundle, classInfo, node);
+			context.setNode(bundle, initialClassState, node);
 	}
 
 	@Nonnull
@@ -104,7 +105,7 @@ public class StaticValueInliningTransformer implements JvmClassTransformer {
 
 	@Nonnull
 	@Override
-	public Set<Class<? extends JvmClassTransformer>> dependencies() {
+	public Set<Class<? extends ClassTransformer>> dependencies() {
 		return Collections.singleton(StaticValueCollectionTransformer.class);
 	}
 }

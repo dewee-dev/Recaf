@@ -5,10 +5,11 @@ import jakarta.annotation.Nullable;
 import net.greypanther.natsort.CaseInsensitiveSimpleNaturalComparator;
 import software.coley.recaf.workspace.model.bundle.AndroidClassBundle;
 import software.coley.recaf.workspace.model.bundle.Bundle;
-import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
+import software.coley.recaf.workspace.model.bundle.VersionedJvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -88,7 +89,7 @@ public class BundlePathNode extends AbstractPathNode<WorkspaceResource, Bundle> 
 	 */
 	public boolean isInVersionedJvmBundle() {
 		WorkspaceResource resource = parentValue();
-		if (resource != null && getValue() instanceof JvmClassBundle jvmBundle)
+		if (resource != null && getValue() instanceof VersionedJvmClassBundle jvmBundle)
 			return resource.getVersionedJvmClassBundles().containsValue(jvmBundle);
 		return false;
 	}
@@ -97,10 +98,10 @@ public class BundlePathNode extends AbstractPathNode<WorkspaceResource, Bundle> 
 	 * @return Bit-mask used for ordering in {@link #compareTo(PathNode)}.
 	 */
 	private int bundleMask() {
-		return ((isInJvmBundle() ? 1 : 0) << 16) |
-				((isInVersionedJvmBundle() ? 1 : 0) << 14) |
-				((isInAndroidBundle() ? 1 : 0) << 12) |
-				((isInFileBundle() ? 1 : 0) << 10);
+		return ((isInJvmBundle() ? 1 : 0) << 10) |
+				((isInVersionedJvmBundle() ? 1 : 0) << 12) |
+				((isInAndroidBundle() ? 1 : 0) << 14) |
+				((isInFileBundle() ? 1 : 0) << 16);
 	}
 
 	@Override
@@ -116,15 +117,18 @@ public class BundlePathNode extends AbstractPathNode<WorkspaceResource, Bundle> 
 
 	@Override
 	public int localCompare(PathNode<?> o) {
-		if (this == o) return 0;
+		if (this == o)
+			return 0;
 
 		if (o instanceof BundlePathNode bundlePathNode) {
-			int cmp = -Integer.compare(bundleMask(), bundlePathNode.bundleMask());
+			int cmp = Integer.compare(bundleMask(), bundlePathNode.bundleMask());
+			if (cmp != 0)
+				return cmp;
 
 			// Order dex class bundles to be in alphabetical order.
 			Bundle bundle = getValue();
 			Object otherBundle = o.getValue();
-			if (cmp == 0 && getParent() != null &&
+			if (getParent() != null &&
 					bundle instanceof AndroidClassBundle &&
 					otherBundle instanceof AndroidClassBundle) {
 				WorkspaceResource resource = getParent().getValue();
@@ -143,5 +147,14 @@ public class BundlePathNode extends AbstractPathNode<WorkspaceResource, Bundle> 
 			}
 		}
 		return 0;
+	}
+
+	@Override
+	public boolean equals(Object o) {
+		// Bundle equality checks are abysmally slow because are checking if all the contained
+		// contents are also equal. Realistically we can get away with a reference check.
+		if (o instanceof BundlePathNode otherPath)
+			return getValue() == otherPath.getValue() && Objects.equals(getParent(), otherPath.getParent());
+		return false;
 	}
 }
