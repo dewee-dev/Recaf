@@ -1,6 +1,7 @@
 package software.coley.recaf.services.transform;
 
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.tree.ClassNode;
@@ -10,7 +11,9 @@ import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.PathNodes;
 import software.coley.recaf.path.ResourcePathNode;
+import software.coley.recaf.services.deobfuscation.transform.generic.DeadCodeRemovingTransformer;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
+import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.util.analysis.ReAnalyzer;
 import software.coley.recaf.util.analysis.ReInterpreter;
 import software.coley.recaf.util.analysis.value.ReValue;
@@ -37,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class JvmTransformerContext {
 	private final Map<Class<? extends JvmClassTransformer>, JvmClassTransformer> transformerMap;
+	private final IntermediateMappings mappings = new IntermediateMappings();
 	private final Map<String, JvmClassData> classData = new ConcurrentHashMap<>();
 	private final Set<String> recomputeFrameClasses = new HashSet<>();
 	private final Workspace workspace;
@@ -74,12 +78,19 @@ public class JvmTransformerContext {
 
 	/**
 	 * Builds the map of initial transformed class paths to their final transformed states.
+	 * <br>
+	 * The map keys are existing workspace paths the respective classes.
+	 * <br>
+	 * The map values are classes post-transformation, without any mappings applied.
 	 *
 	 * @param inheritanceGraph
 	 * 		Inheritance graph tied to the workspace the transformed classes belong to.
+	 *
+	 * @throws TransformationException
+	 * 		When the classes cannot be written back to {@code byte[]} likely due to frame computation problems.
 	 */
 	@Nonnull
-	protected Map<ClassPathNode, JvmClassInfo> buildChangeMap(@Nonnull InheritanceGraph inheritanceGraph) {
+	protected Map<ClassPathNode, JvmClassInfo> buildChangeMap(@Nonnull InheritanceGraph inheritanceGraph) throws TransformationException {
 		ResourcePathNode resourcePath = PathNodes.resourcePath(workspace, resource);
 		Map<ClassPathNode, JvmClassInfo> map = new HashMap<>();
 		for (JvmClassData data : classData.values()) {
@@ -90,20 +101,24 @@ public class JvmTransformerContext {
 					int flags = recompute ? ClassWriter.COMPUTE_FRAMES : 0;
 					ClassReader reader = data.initialClass.getClassReader();
 					ClassWriter writer = new WorkspaceClassWriter(inheritanceGraph, reader, flags);
-					if (recompute)
-						data.node.accept(new FrameSkippingVisitor(writer));
-					else
-						data.node.accept(writer);
-					byte[] modifiedBytes = writer.toByteArray();
+					try {
+						if (recompute)
+							data.node.accept(new FrameSkippingVisitor(writer));
+						else
+							data.node.accept(writer);
 
-					// Update output map
-					JvmClassInfo modifiedClass = data.initialClass.toJvmClassBuilder()
-							.adaptFrom(modifiedBytes)
-							.build();
-					ClassPathNode classPath = resourcePath.child(data.bundle)
-							.child(modifiedClass.getPackageName())
-							.child(modifiedClass);
-					map.put(classPath, modifiedClass);
+						// Update output map
+						byte[] modifiedBytes = writer.toByteArray();
+						JvmClassInfo modifiedClass = data.initialClass.toJvmClassBuilder()
+								.adaptFrom(modifiedBytes)
+								.build();
+						ClassPathNode classPath = resourcePath.child(data.bundle)
+								.child(modifiedClass.getPackageName())
+								.child(modifiedClass);
+						map.put(classPath, modifiedClass);
+					} catch (Throwable t) {
+						throw new TransformationException("ClassNode --> byte[] failed for class '" + data.node.name + "'", t);
+					}
 				} else {
 					// Update output map if the bytecode is not the same as the initial state
 					byte[] bytecode = data.getBytecode();
@@ -167,6 +182,26 @@ public class JvmTransformerContext {
 		//  - interpreter.setInvokeVirtualLookup(...);
 		//  - interpreter.setGetStaticLookup(...);
 		return new ReAnalyzer(interpreter);
+	}
+
+	/**
+	 * Utility to invoke {@link DeadCodeRemovingTransformer} for a given method.
+	 * Requires the transformer to be provided to this context.
+	 *
+	 * @param declaringClass
+	 * 		Class declaring the method to clean up.
+	 * @param method
+	 * 		Method with dead code to remove.
+	 *
+	 * @return {@code true} when there were changes as a result of dead code removal.
+	 * {@code false} for no changes being made to the passed method.
+	 *
+	 * @throws TransformationException
+	 * 		When the {@link DeadCodeRemovingTransformer} was not provided to this context,
+	 * 		or if dead code removal encountered an error.
+	 */
+	public boolean pruneDeadCode(@Nonnull ClassNode declaringClass, @Nonnull MethodNode method) throws TransformationException {
+		return getJvmTransformer(DeadCodeRemovingTransformer.class).prune(declaringClass, method);
 	}
 
 	/**
@@ -269,6 +304,20 @@ public class JvmTransformerContext {
 	}
 
 	/**
+	 * Transformers that aim to rename classes, fields, and methods should register the desired mappings
+	 * here, and they will be applied after all other transformations are applied.
+	 *
+	 * @return Mappings to apply upon transformation completion.
+	 */
+	@Nonnull
+	public IntermediateMappings getMappings() {
+		return mappings;
+	}
+
+	/**
+	 * Get the {@link JvmClassTransformer} instance associated with this context, or throw an exception if no such
+	 * transformer is registered. If you are looking for an optional lookup use: {@link #getOptionalJvmTransformer(Class)}.
+	 *
 	 * @param key
 	 * 		Transformer class.
 	 * @param <T>
@@ -280,12 +329,34 @@ public class JvmTransformerContext {
 	 * 		When the transformer was not found within this context.
 	 */
 	@Nonnull
-	@SuppressWarnings("unchecked")
 	public <T extends JvmClassTransformer> T getJvmTransformer(Class<T> key) throws TransformationException {
-		JvmClassTransformer transformer = transformerMap.get(key);
+		T transformer = getOptionalJvmTransformer(key);
 		if (transformer == null)
 			throw new TransformationException("Transformation context attempted lookup of class '"
 					+ key.getSimpleName() + "' but did not have an associated entry");
+		return transformer;
+	}
+
+	/**
+	 * Get the {@link JvmClassTransformer} instance associated with this context, if it is registered.
+	 *
+	 * @param key
+	 * 		Transformer class.
+	 * @param <T>
+	 * 		Transformer type.
+	 *
+	 * @return Shared instance of the transformer within this context,
+	 * or {@code null} if no such transformer is registered to this context.
+	 */
+	@Nullable
+	@SuppressWarnings("unchecked")
+	public <T extends JvmClassTransformer> T getOptionalJvmTransformer(Class<T> key) {
+		// NOTE: Any Recaf-defined transformer must be @Dependent so that CDI doesn't give you proxy wrappers
+		// of the class. Our map is identity based, and if you do 'get(MyClass.class)' and we end up storing the
+		// proxy wrapper, then the lookup will fail even though the transformer is seemingly registered.
+		JvmClassTransformer transformer = transformerMap.get(key);
+		if (transformer == null)
+			return null;
 		return (T) transformer;
 	}
 
@@ -337,7 +408,12 @@ public class JvmTransformerContext {
 					}
 				}
 			}
-			return node;
+
+			// We always give back a copy so actions taken on this node are not affecting the cached instance
+			// unless a transformer explicitly commits the change.
+			ClassNode nodeCopy = new ClassNode();
+			node.accept(nodeCopy);
+			return nodeCopy;
 		}
 
 		/**

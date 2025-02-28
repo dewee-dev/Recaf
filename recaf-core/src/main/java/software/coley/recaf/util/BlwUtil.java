@@ -8,7 +8,9 @@ import dev.xdark.blw.code.generic.GenericLabel;
 import dev.xdark.blw.code.instruction.BranchInstruction;
 import dev.xdark.blw.code.instruction.ConditionalJumpInstruction;
 import dev.xdark.blw.code.instruction.ImmediateJumpInstruction;
+import dev.xdark.blw.code.instruction.LookupSwitchInstruction;
 import dev.xdark.blw.code.instruction.SimpleInstruction;
+import dev.xdark.blw.code.instruction.TableSwitchInstruction;
 import dev.xdark.blw.code.instruction.VarInstruction;
 import dev.xdark.blw.code.instruction.VariableIncrementInstruction;
 import dev.xdark.blw.simulation.ExecutionEngines;
@@ -27,11 +29,15 @@ import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.LdcInsnNode;
+import org.objectweb.asm.tree.LineNumberNode;
+import org.objectweb.asm.tree.LookupSwitchInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
+import org.objectweb.asm.tree.TableSwitchInsnNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -67,10 +73,50 @@ public class BlwUtil {
 						new ImmediateJumpInstruction(insn.getOpcode(), label) :
 						new ConditionalJumpInstruction(insn.getOpcode(), label);
 			}
+			case TableSwitchInsnNode tsin -> {
+				int min = tsin.min;
+				Label dflt = new GenericLabel();
+				dflt.setIndex(AsmInsnUtil.indexOf(tsin.dflt));
+				List<Label> targets = tsin.labels.stream().map(l -> {
+					Label target = new GenericLabel();
+					target.setIndex(AsmInsnUtil.indexOf(l));
+					return target;
+				}).toList();
+				yield new TableSwitchInstruction(min, dflt, targets);
+			}
+			case LookupSwitchInsnNode lsin -> {
+				int[] keys = lsin.keys.stream().mapToInt(i -> i).toArray();
+				Label dflt = new GenericLabel();
+				dflt.setIndex(AsmInsnUtil.indexOf(lsin.dflt));
+				List<Label> targets = lsin.labels.stream().map(l -> {
+					Label target = new GenericLabel();
+					target.setIndex(AsmInsnUtil.indexOf(l));
+					return target;
+				}).toList();
+				yield new LookupSwitchInstruction(keys, dflt, targets);
+			}
 			case LabelNode ln -> new LabelInstruction(AsmInsnUtil.indexOf(ln));
-			case FrameNode fr -> new SimpleInstruction(0);
+			case FrameNode fr -> new FrameInstruction();
+			case LineNumberNode ln -> new LineInstruction(ln.line);
 			default -> new SimpleInstruction(insn.getOpcode());
 		};
+	}
+
+	/**
+	 * @param instructions
+	 * 		Collection of ASM instruction.
+	 *
+	 * @return JASM text representation of BLW converted instance of the instructions.
+	 */
+	@Nonnull
+	public static String toString(@Nonnull Iterable<AbstractInsnNode> instructions) {
+		StringBuilder sb = new StringBuilder();
+		for (AbstractInsnNode instruction : instructions)
+			if (instruction.getType() != AbstractInsnNode.FRAME)
+				sb.append(toString(instruction)).append('\n');
+		if (sb.isEmpty())
+			return "";
+		return sb.substring(0, sb.length() - 1);
 	}
 
 	/**
@@ -93,14 +139,20 @@ public class BlwUtil {
 	 */
 	@Nonnull
 	private static String toString(@Nonnull Instruction insn) {
-		// Special case for our converted model
+		// Special cases that don't have dedicated printer methods exposed in JASM.
+		if (insn instanceof LineInstruction line)
+			return "line " + line.line;
+		else if (insn instanceof FrameInstruction)
+			return "// frame";
+
+		// Collect label names from the instruction.
 		Map<Integer, String> labelNames;
 		if (insn instanceof LabelInstruction label) {
 			int index = label.getIndex();
 			labelNames = Map.of(index, "L" + index);
 		} else if (insn instanceof BranchInstruction branch) {
 			labelNames = branch.targetsStream()
-					.collect(Collectors.toMap(Label::getIndex, l -> "L" + l.getIndex()));
+					.collect(Collectors.toMap(Label::getIndex, l -> "L" + l.getIndex(), (a, b) -> a));
 		} else {
 			labelNames = Collections.emptyMap();
 		}
@@ -121,6 +173,29 @@ public class BlwUtil {
 
 		// Cut off first 2 chars of unused indentation then cap off the max length.
 		return ctx.toString().substring(2).replace('\n', ' ');
+	}
+
+	/**
+	 * Dummy instruction to facilitate printing in {@link #toString(Instruction)}.
+	 */
+	private record FrameInstruction() implements Instruction {
+		@Override
+		public int opcode() {
+			return -1;
+		}
+	}
+
+	/**
+	 * Dummy instruction to facilitate printing in {@link #toString(Instruction)}.
+	 *
+	 * @param line
+	 * 		Line number.
+	 */
+	private record LineInstruction(int line) implements Instruction {
+		@Override
+		public int opcode() {
+			return -1;
+		}
 	}
 
 	/**

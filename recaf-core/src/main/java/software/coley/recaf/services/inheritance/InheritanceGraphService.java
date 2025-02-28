@@ -23,7 +23,7 @@ import java.util.Objects;
 @ApplicationScoped
 public class InheritanceGraphService implements Service {
 	public static final String SERVICE_ID = "graph-inheritance";
-	private final InheritanceGraphConfig config;
+	private final InheritanceGraphServiceConfig config;
 	private final MappingListeners mappingListeners;
 	private final WorkspaceManager workspaceManager;
 	private InheritanceGraph currentWorkspaceGraph;
@@ -31,7 +31,7 @@ public class InheritanceGraphService implements Service {
 	@Inject
 	public InheritanceGraphService(@Nonnull WorkspaceManager workspaceManager,
 	                               @Nonnull MappingListeners mappingListeners,
-	                               @Nonnull InheritanceGraphConfig config) {
+	                               @Nonnull InheritanceGraphServiceConfig config) {
 		this.workspaceManager = workspaceManager;
 		this.mappingListeners = mappingListeners;
 		this.config = config;
@@ -64,7 +64,7 @@ public class InheritanceGraphService implements Service {
 	 */
 	@Nonnull
 	public InheritanceGraph newInheritanceGraph(@Nonnull Workspace workspace) {
-		InheritanceGraph graph = new InheritanceGraph(config, workspace);
+		InheritanceGraph graph = new InheritanceGraph(workspace);
 		workspace.addWorkspaceModificationListener(graph);
 		return graph;
 	}
@@ -98,7 +98,7 @@ public class InheritanceGraphService implements Service {
 
 	@Nonnull
 	@Override
-	public InheritanceGraphConfig getServiceConfig() {
+	public InheritanceGraphServiceConfig getServiceConfig() {
 		return config;
 	}
 

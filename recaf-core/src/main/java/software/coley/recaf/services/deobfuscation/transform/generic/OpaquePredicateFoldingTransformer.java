@@ -15,6 +15,7 @@ import org.objectweb.asm.tree.analysis.Frame;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
 import software.coley.recaf.services.inheritance.InheritanceGraphService;
+import software.coley.recaf.services.transform.ClassTransformer;
 import software.coley.recaf.services.transform.JvmClassTransformer;
 import software.coley.recaf.services.transform.JvmTransformerContext;
 import software.coley.recaf.services.transform.TransformationException;
@@ -26,11 +27,15 @@ import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
+import java.util.Collections;
+import java.util.Set;
 import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 
 import static org.objectweb.asm.Opcodes.*;
 import static software.coley.recaf.services.deobfuscation.transform.generic.LinearOpaqueConstantFoldingTransformer.isSupportedValueProducer;
+import static software.coley.recaf.util.AsmInsnUtil.isFlowControl;
+import static software.coley.recaf.util.AsmInsnUtil.isSwitchEffectiveGoto;
 
 /**
  * A transformer that folds opaque predicates into single-path control flows.
@@ -65,13 +70,49 @@ public class OpaquePredicateFoldingTransformer implements JvmClassTransformer {
 		ClassNode node = context.getNode(bundle, initialClassState);
 		for (MethodNode method : node.methods) {
 			InsnList instructions = method.instructions;
+
+			// Skip if method is abstract.
 			if (instructions == null)
 				continue;
+
+			// Some obfuscators will use 'switch' instructions with all labels being the same in order to
+			// recreate the behavior of 'goto'. We will just replace these if we see them.
+			// We do this in a pre-pass here since we end up inserting an additional 'POP' for any matched switch.
+			for (int i = 1; i < instructions.size() - 1; i++) {
+				AbstractInsnNode instruction = instructions.get(i);
+				if (instruction instanceof TableSwitchInsnNode switchInsn && isSwitchEffectiveGoto(switchInsn)) {
+					AbstractInsnNode previous = switchInsn.getPrevious();
+					if (isSupportedValueProducer(previous))
+						instructions.remove(previous);
+					else
+						instructions.insertBefore(switchInsn, new InsnNode(POP));
+					instructions.set(switchInsn, new JumpInsnNode(GOTO, switchInsn.dflt));
+					dirty = true;
+				} else if (instruction instanceof LookupSwitchInsnNode switchInsn && isSwitchEffectiveGoto(switchInsn)) {
+					AbstractInsnNode previous = switchInsn.getPrevious();
+					if (isSupportedValueProducer(previous))
+						instructions.remove(previous);
+					else
+						instructions.insertBefore(switchInsn, new InsnNode(POP));
+					instructions.set(switchInsn, new JumpInsnNode(GOTO, switchInsn.dflt));
+					dirty = true;
+				}
+			}
+
 			try {
 				boolean localDirty = false;
 				Frame<ReValue>[] frames = context.analyze(inheritanceGraph, node, method);
 				for (int i = 1; i < instructions.size() - 1; i++) {
+					AbstractInsnNode instruction = instructions.get(i);
+
+					// Skip if this isn't a control flow instruction.
+					// We are only flattening control flow here.
+					if (!isFlowControl(instruction))
+						continue;
+
 					// Skip if there is no frame for this instruction.
+					if (i >= frames.length)
+						continue; // Can happen if there is dead code at the end
 					Frame<ReValue> frame = frames[i];
 					if (frame == null || frame.getStackSize() == 0)
 						continue;
@@ -89,7 +130,6 @@ public class OpaquePredicateFoldingTransformer implements JvmClassTransformer {
 
 					// Handle any control flow instruction and see if we know based on the frame contents if a specific
 					// path is always taken.
-					AbstractInsnNode instruction = instructions.get(i);
 					int insnType = instruction.getType();
 					if (insnType == AbstractInsnNode.JUMP_INSN) {
 						JumpInsnNode jin = (JumpInsnNode) instruction;
@@ -203,13 +243,8 @@ public class OpaquePredicateFoldingTransformer implements JvmClassTransformer {
 				// Clear any code that is no longer accessible. If we don't do this step ASM's auto-cleanup
 				// will likely leave some ugly artifacts like "athrow" in dead code regions.
 				if (localDirty) {
+					context.pruneDeadCode(node, method);
 					dirty = true;
-					frames = context.analyze(inheritanceGraph, node, method);
-					for (int i = instructions.size() - 1; i >= 0; i--) {
-						AbstractInsnNode insn = instructions.get(i);
-						if (frames[i] == null || insn.getOpcode() == NOP)
-							instructions.remove(insn);
-					}
 				}
 			} catch (Throwable t) {
 				throw new TransformationException("Error encountered when folding opaque predicates", t);
@@ -293,6 +328,12 @@ public class OpaquePredicateFoldingTransformer implements JvmClassTransformer {
 			return true;
 		}
 		return false;
+	}
+
+	@Nonnull
+	@Override
+	public Set<Class<? extends ClassTransformer>> dependencies() {
+		return Collections.singleton(DeadCodeRemovingTransformer.class);
 	}
 
 	@Nonnull
